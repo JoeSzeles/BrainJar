@@ -1,0 +1,1522 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BrainJar - Neural Trading Dashboard</title>
+    <script src="https://cdn.socket.io/4.6.0/socket.io.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Monaco', 'Courier New', monospace;
+            background: linear-gradient(135deg, #0c1e3d 0%, #1a3557 100%);
+            color: #e0e0e0;
+            min-height: 100vh;
+            padding: 10px;
+        }
+        
+        .container {
+            max-width: 2000px;
+            margin: 0 auto;
+        }
+        
+        nav {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: rgba(10, 30, 60, 0.8);
+            padding: 15px 20px;
+            border-radius: 8px;
+            margin-bottom: 10px;
+            border: 1px solid #4a7ba7;
+        }
+        
+        nav h1 {
+            color: #4a9eff;
+            font-size: 1.5em;
+            text-shadow: 0 0 10px rgba(74, 158, 255, 0.5);
+        }
+        
+        .status-row {
+            display: flex;
+            gap: 20px;
+            align-items: center;
+            font-size: 13px;
+        }
+        
+        .status-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 4px;
+            border: 1px solid #4a7ba7;
+        }
+        
+        .status-indicator {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+        
+        .online {
+            background: #00ff00;
+            box-shadow: 0 0 8px #00ff00;
+        }
+        
+        .offline {
+            background: #ff0000;
+            box-shadow: 0 0 8px #ff0000;
+        }
+        
+        .orange {
+            background: #ffaa00;
+            box-shadow: 0 0 8px #ffaa00;
+        }
+        
+        .panel {
+            background: rgba(26, 53, 87, 0.6);
+            border: 1px solid #4a7ba7;
+            border-radius: 8px;
+            padding: 15px;
+            backdrop-filter: blur(10px);
+            margin-bottom: 10px;
+        }
+        
+        .panel h2 {
+            color: #4a9eff;
+            font-size: 1.1em;
+            margin-bottom: 12px;
+            border-bottom: 1px solid #4a7ba7;
+            padding-bottom: 8px;
+        }
+        
+        .grid-2 {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+        
+        .grid-4 {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 10px;
+        }
+        
+        .stat-box {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 10px;
+            border-radius: 4px;
+            border-left: 3px solid #4a9eff;
+        }
+        
+        .stat-label {
+            color: #a0a0a0;
+            font-size: 11px;
+            text-transform: uppercase;
+            margin-bottom: 4px;
+        }
+        
+        .stat-value {
+            color: #00ff00;
+            font-size: 14px;
+            font-weight: bold;
+            font-family: 'Courier New', monospace;
+        }
+        
+        .stat-value.red { color: #ff4444; }
+        .stat-value.orange { color: #ffaa00; }
+        .stat-value.blue { color: #4a9eff; }
+        
+        .tick-feed {
+            max-height: 200px;
+            overflow-y: auto;
+            background: rgba(0, 0, 0, 0.4);
+            border: 1px solid #4a7ba7;
+            border-radius: 4px;
+            padding: 8px;
+        }
+        
+        .tick-item {
+            display: grid;
+            grid-template-columns: 80px 60px 60px 60px 60px 60px;
+            gap: 8px;
+            padding: 6px;
+            border-bottom: 1px solid rgba(74, 158, 255, 0.2);
+            font-size: 11px;
+            font-family: 'Courier New', monospace;
+        }
+        
+        .tick-item:last-child {
+            border-bottom: none;
+        }
+        
+        .tick-time { color: #4a9eff; }
+        .tick-bid { color: #ff6666; }
+        .tick-ask { color: #66ff66; }
+        .tick-price { color: #ffff66; font-weight: bold; }
+        .tick-volume { color: #66ccff; }
+        .tick-spread { color: #cc99ff; }
+        
+        .candle-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 11px;
+            font-family: 'Courier New', monospace;
+        }
+        
+        .candle-table th {
+            background: rgba(0, 0, 0, 0.3);
+            color: #4a9eff;
+            padding: 8px;
+            text-align: left;
+            border: 1px solid #4a7ba7;
+        }
+        
+        .candle-table td {
+            padding: 6px 8px;
+            border: 1px solid rgba(74, 158, 255, 0.2);
+        }
+        
+        .candle-table .green { color: #00ff00; }
+        .candle-table .red { color: #ff4444; }
+        
+        .insights-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 8px;
+        }
+        
+        .insight-badge {
+            background: rgba(0, 0, 0, 0.4);
+            padding: 10px;
+            border-radius: 4px;
+            border-left: 3px solid #4a9eff;
+            font-size: 11px;
+        }
+        
+        .insight-label {
+            color: #a0a0a0;
+            font-size: 10px;
+            text-transform: uppercase;
+            margin-bottom: 4px;
+        }
+        
+        .insight-value {
+            color: #00ff00;
+            font-weight: bold;
+            font-size: 12px;
+        }
+        
+        .chart-container {
+            position: relative;
+            height: 250px;
+            margin: 10px 0;
+        }
+        
+        button {
+            padding: 8px 16px;
+            background: linear-gradient(135deg, #4a9eff 0%, #0084ff 100%);
+            border: none;
+            border-radius: 4px;
+            color: white;
+            font-weight: bold;
+            cursor: pointer;
+            font-size: 12px;
+            transition: all 0.2s;
+        }
+        
+        button:hover {
+            box-shadow: 0 4px 12px rgba(74, 158, 255, 0.4);
+            transform: translateY(-1px);
+        }
+        
+        .trade-item {
+            display: grid;
+            grid-template-columns: 80px 60px 60px 60px 80px;
+            gap: 8px;
+            padding: 6px;
+            border-bottom: 1px solid rgba(74, 158, 255, 0.2);
+            font-size: 11px;
+            font-family: 'Courier New', monospace;
+        }
+        
+        .trade-item.buy { border-left: 3px solid #00ff00; }
+        .trade-item.sell { border-left: 3px solid #ff4444; }
+        
+        .trade-time { color: #4a9eff; }
+        .trade-buy { color: #00ff00; }
+        .trade-sell { color: #ff4444; }
+        .trade-price { color: #ffff66; }
+        .trade-pnl { font-weight: bold; }
+        .trade-pnl.positive { color: #00ff00; }
+        .trade-pnl.negative { color: #ff4444; }
+        
+        /* Brain Tab Styles */
+        .tab-bar {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+        
+        .tab-btn {
+            padding: 10px 20px;
+            background: rgba(0,0,0,0.3);
+            border: 1px solid #4a7ba7;
+            color: #e0e0e0;
+            cursor: pointer;
+            border-radius: 4px;
+            font-weight: bold;
+            transition: all 0.2s;
+        }
+        
+        .tab-btn:hover {
+            background: rgba(74,158,255,0.3);
+        }
+        
+        .tab-btn.active {
+            background: #4a9eff;
+            color: white;
+            box-shadow: 0 0 10px rgba(74,158,255,0.5);
+        }
+        
+        .tab-content {
+            display: none;
+        }
+        
+        .tab-content.active {
+            display: block;
+        }
+        
+        .control-group {
+            margin-bottom: 15px;
+        }
+        
+        .control-group label {
+            display: block;
+            margin-bottom: 5px;
+            color: #a0a0a0;
+            font-size: 12px;
+        }
+        
+        .control-group input[type="checkbox"] {
+            margin-right: 8px;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Navigation Bar -->
+        <nav>
+            <h1>🧠 BrainJar Neural Trading</h1>
+            <div class="status-row">
+                <div class="status-item">
+                    <span class="status-indicator online" id="ig-indicator"></span>
+                    <span id="ig-status">IG Connecting...</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-indicator online" id="brain-indicator"></span>
+                    <span id="brain-status">Brain Ready</span>
+                </div>
+                <div class="status-item" id="account-display" style="display:none;">
+                    <strong style="color: #4a9eff;">Balance:</strong> <span id="balance">--</span>
+                </div>
+            </div>
+        </nav>
+        
+        <div class="tab-bar">
+            <button id="trading-btn" class="tab-btn active">Trading</button>
+            <button id="brain-btn" class="tab-btn">🧠 Brain</button>
+        </div>
+        
+        <div id="trading-content" class="tab-content active">
+        <!-- IG Connection Status Panel -->
+        <div class="panel">
+            <h2>📡 IG Connection Status</h2>
+            <div class="grid-4">
+                <div class="stat-box">
+                    <div class="stat-label">Connection</div>
+                    <div class="stat-value" id="conn-state">Disconnected</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">Last Tick</div>
+                    <div class="stat-value blue" id="last-tick-time">--:--:--</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">Total Ticks</div>
+                    <div class="stat-value" id="tick-count">0</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">Account ID</div>
+                    <div class="stat-value blue" id="account-id">--</div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Instrument Selector & Balance Panel -->
+        <div class="panel">
+            <h2>🔍 Instrument Selector & Account Balance</h2>
+            <div class="grid-2" style="margin-bottom: 15px;">
+                <div>
+                    <div style="color: #4a9eff; font-size: 12px; margin-bottom: 8px; text-transform: uppercase;">Select Instrument</div>
+                    <div style="display: flex; gap: 8px; margin-bottom: 10px;">
+                        <input type="text" id="instrument-search" placeholder="Search (e.g. silver, gbp)" style="flex: 1; padding: 8px; background-color: #2a2a2a; color: #e0e0e0; border: 1px solid #444; border-radius: 3px;">
+                    </div>
+                    <div id="instrument-results" style="max-height: 150px; overflow-y: auto; background: rgba(0,0,0,0.3); border: 1px solid #444; border-radius: 3px; display: none;">
+                        <!-- Dropdown results will appear here -->
+                    </div>
+                    <div id="instrument-selected" style="padding: 8px; background: rgba(42, 100, 66, 0.3); border-left: 3px solid #66ff66; border-radius: 3px; margin-top: 8px;">
+                        <div style="color: #a0a0a0; font-size: 11px;">Selected Instrument</div>
+                        <div style="color: #66ff66; font-weight: bold;">None (Default: Silver CS.D.XAGUSD.SPOT.IP)</div>
+                    </div>
+                </div>
+                <div>
+                    <div style="color: #4a9eff; font-size: 12px; margin-bottom: 8px; text-transform: uppercase;">Account Health</div>
+                    <div class="stat-box" style="margin-bottom: 8px;">
+                        <div class="stat-label">Balance</div>
+                        <div class="stat-value" id="acc-balance">--</div>
+                    </div>
+                    <div class="stat-box" style="margin-bottom: 8px;">
+                        <div class="stat-label">Equity / P&L</div>
+                        <div class="stat-value" id="acc-pnl">--</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">Margin % / Available</div>
+                        <div class="stat-value" id="acc-margin">--</div>
+                    </div>
+                </div>
+            </div>
+            <button id="start-backtest" style="padding: 8px 16px; background-color: #2a4a8a; border: 1px solid #4a9cff; color: #66ccff; border-radius: 3px; cursor: pointer; margin-right: 8px;" disabled>⚡ Auto-Backtest Instrument</button>
+            <button id="test-buy" style="padding: 8px 16px; background-color: #1a6a2a; border: 1px solid #66ff66; color: #66ff66; border-radius: 3px; cursor: pointer; margin-right: 8px;" disabled>📈 Test BUY</button>
+            <button id="test-sell" style="padding: 8px 16px; background-color: #6a2a2a; border: 1px solid #ff6666; color: #ff6666; border-radius: 3px; cursor: pointer;" disabled>📉 Test SELL</button>
+        </div>
+        
+        <!-- Live Tick Data Feed -->
+        <div class="panel">
+            <h2>📊 Live Tick Data Feed</h2>
+            <div class="tick-feed" id="tick-feed">
+                <div style="color: #888; text-align: center; padding: 30px;">Waiting for ticks...</div>
+            </div>
+        </div>
+        
+        <!-- Market Microstructure Analysis -->
+        <div class="panel">
+            <h2>🔬 Market Microstructure Analysis</h2>
+            <div class="grid-2">
+                <div>
+                    <div style="color: #4a9eff; font-size: 12px; margin-bottom: 8px; text-transform: uppercase;">Price Statistics</div>
+                    <div class="stat-box" style="margin-bottom: 8px;">
+                        <div class="stat-label">Current Price</div>
+                        <div class="stat-value" id="price-current">--</div>
+                    </div>
+                    <div class="stat-box" style="margin-bottom: 8px;">
+                        <div class="stat-label">24h Range</div>
+                        <div class="stat-value" id="price-range">-- to --</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">Volatility (Annualized)</div>
+                        <div class="stat-value" id="volatility">--</div>
+                    </div>
+                </div>
+                <div>
+                    <div style="color: #4a9eff; font-size: 12px; margin-bottom: 8px; text-transform: uppercase;">Market Quality</div>
+                    <div class="stat-box" style="margin-bottom: 8px;">
+                        <div class="stat-label">Current Spread</div>
+                        <div class="stat-value" id="spread-current">--</div>
+                    </div>
+                    <div class="stat-box" style="margin-bottom: 8px;">
+                        <div class="stat-label">Average Spread</div>
+                        <div class="stat-value" id="spread-avg">--</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">Current Volume</div>
+                        <div class="stat-value" id="volume-current">--</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Trading Signals & Market Insights -->
+        <div class="panel">
+            <h2>⚡ Trading Signals & Market Insights</h2>
+            <div class="insights-container">
+                <div class="insight-badge">
+                    <div class="insight-label">Market Condition</div>
+                    <div class="insight-value" id="signal-condition">--</div>
+                </div>
+                <div class="insight-badge">
+                    <div class="insight-label">Trend Direction</div>
+                    <div class="insight-value" id="signal-trend">--</div>
+                </div>
+                <div class="insight-badge">
+                    <div class="insight-label">Price Level</div>
+                    <div class="insight-value" id="signal-level">--</div>
+                </div>
+                <div class="insight-badge">
+                    <div class="insight-label">Volume Activity</div>
+                    <div class="insight-value" id="signal-volume">--</div>
+                </div>
+                <div class="insight-badge">
+                    <div class="insight-label">Spread Classification</div>
+                    <div class="insight-value" id="signal-spread">--</div>
+                </div>
+                <div class="insight-badge">
+                    <div class="insight-label">Bid-Ask Imbalance</div>
+                    <div class="insight-value" id="signal-imbalance">--</div>
+                </div>
+                <div class="insight-badge">
+                    <div class="insight-label">Volume Breakout</div>
+                    <div class="insight-value" id="signal-breakout">--</div>
+                </div>
+                <div class="insight-badge">
+                    <div class="insight-label">Price Momentum</div>
+                    <div class="insight-value" id="signal-momentum">--</div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Candle Data Table -->
+        <div class="panel">
+            <h2>🕯️ 1-Second Candle Data (OHLCV)</h2>
+            <table class="candle-table">
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th>Open</th>
+                        <th>High</th>
+                        <th>Low</th>
+                        <th>Close</th>
+                        <th>Volume</th>
+                        <th>Range</th>
+                        <th>VWAP</th>
+                    </tr>
+                </thead>
+                <tbody id="candle-body">
+                    <tr><td colspan="8" style="text-align: center; color: #888;">Waiting for candle data...</td></tr>
+                </tbody>
+            </table>
+        </div>
+        
+        <!-- Trade Execution History -->
+        <div class="panel">
+            <h2>💼 Trade Execution History</h2>
+            <div id="trade-history" style="max-height: 200px; overflow-y: auto;">
+                <div style="color: #888; text-align: center; padding: 30px;">No trades yet...</div>
+            </div>
+        </div>
+        
+        <!-- Charts -->
+        <div class="panel">
+            <h2>📈 Price & Volume Charts</h2>
+            <div class="grid-2">
+                <div class="chart-container">
+                    <canvas id="priceChart"></canvas>
+                </div>
+                <div class="chart-container">
+                    <canvas id="volumeChart"></canvas>
+                </div>
+            </div>
+        </div>
+        </div><!-- end trading-content -->
+        
+        <div id="brain-content" class="tab-content">
+            <!-- Brain Regions Schematic -->
+            <div class="panel">
+                <h2>🧬 Brain Regions Schematic</h2>
+                <svg id="brain-schematic" width="100%" height="250" style="border: 1px solid #4a7ba7; border-radius: 4px; background: rgba(0,0,0,0.2);">
+                    <!-- Optic Lobe -->
+                    <circle id="region-optic_lobe" cx="200" cy="120" r="60" fill="#ff6666" opacity="0.7" stroke="#ffaaaa" stroke-width="2" style="cursor: pointer;" />
+                    <text x="200" y="125" text-anchor="middle" fill="white" font-size="14" font-weight="bold">Optic\nLobe</text>
+                    <!-- Mechanosensory -->
+                    <circle id="region-mechanosensory" cx="400" cy="120" r="60" fill="#66ff66" opacity="0.7" stroke="#aaffaa" stroke-width="2" style="cursor: pointer;" />
+                    <text x="400" y="125" text-anchor="middle" fill="white" font-size="14" font-weight="bold">Mechano\nsensory</text>
+                    <!-- Motor -->
+                    <circle id="region-motor" cx="300" cy="220" r="50" fill="#6666ff" opacity="0.7" stroke="#aaaaff" stroke-width="2" />
+                    <text x="300" y="225" text-anchor="middle" fill="white" font-size="12" font-weight="bold">Motor</text>
+                    <!-- Connection lines -->
+                    <line x1="200" y1="180" x2="300" y2="170" stroke="#4a9eff" stroke-width="2" opacity="0.5" />
+                    <line x1="400" y1="180" x2="300" y2="170" stroke="#4a9eff" stroke-width="2" opacity="0.5" />
+                </svg>
+                <p style="margin-top: 10px; font-size: 11px; color: #a0a0a0;">Click regions to toggle active/inactive. Green = processing input, Red = idle.</p>
+            </div>
+            
+            <!-- Task Assignment & Controls -->
+            <div class="panel">
+                <h2>⚙️ Task Assignment</h2>
+                <div class="grid-2">
+                    <label class="control-group">
+                        <input type="checkbox" id="task-price_monitor" checked> Price Monitor → Optic Lobe
+                    </label>
+                    <label class="control-group">
+                        <input type="checkbox" id="task-volume_pressure"> Volume Pressure → Mechanosensory
+                    </label>
+                </div>
+                <button id="test-task" style="margin-top: 10px;">✓ Activate Tasks</button>
+            </div>
+            
+            <!-- Calibration Controls -->
+            <div class="panel">
+                <h2>🔧 Calibration Sliders</h2>
+                <div class="control-group">
+                    <label>Poisson Rate (r_poi): <span id="r-poi-val">100</span> Hz</label>
+                    <input type="range" id="cal-r_poi" min="0" max="500" value="100" step="10" style="width: 100%;">
+                </div>
+                <div class="control-group">
+                    <label>Time Constant (tau_syn): <span id="tau-val">10</span> ms</label>
+                    <input type="range" id="cal-tau" min="1" max="50" value="10" step="1" style="width: 100%;">
+                </div>
+                <div class="control-group">
+                    <label>Synaptic Weight (w_syn): <span id="w-syn-val">1.0</span>x</label>
+                    <input type="range" id="cal-w_syn" min="0.5" max="2.0" value="1.0" step="0.1" style="width: 100%;">
+                </div>
+                <button id="apply-calibration" style="margin-top: 10px;">Apply Calibration</button>
+                <button id="observe-test">Observe Rates</button>
+            </div>
+            
+            <!-- Feedback Controls -->
+            <div class="panel">
+                <h2>🎓 Training Feedback</h2>
+                <button id="pos-feedback" style="margin-right: 10px;">👍 Positive Feedback</button>
+                <button id="neg-feedback">👎 Negative Feedback</button>
+                <p style="margin-top: 10px; font-size: 11px; color: #a0a0a0;">Feedback modulates synaptic weights to reinforce/suppress behaviors.</p>
+            </div>
+            
+            <!-- Efficiency Metrics -->
+            <div class="panel">
+                <h2>📊 Efficiency Metrics</h2>
+                <div class="grid-2">
+                    <div class="chart-container">
+                        <canvas id="efficiencyChart"></canvas>
+                    </div>
+                    <div class="chart-container">
+                        <canvas id="correlationChart"></canvas>
+                    </div>
+                </div>
+                <div style="margin-top: 10px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                    <div class="stat-box">
+                        <div class="stat-label">Avg Stim Efficiency</div>
+                        <div class="stat-value" id="avg-efficiency">--</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">Trade Correlation</div>
+                        <div class="stat-value" id="trade-corr">--</div>
+                    </div>
+                </div>
+                <p style="margin-top: 10px; font-size: 11px; color: #a0a0a0;">Stim Efficiency = |ΔMotorRate| / |ΔPrice|. Trade Correlation = (P&L sign) vs (motor_rate direction).</p>
+            </div>
+            
+            <!-- Logs & Export -->
+            <div class="panel">
+                <h2>📋 Logs & Export</h2>
+                <button id="export-csv" style="margin-right: 10px;">⬇️ Export CSV (brain-trades.csv)</button>
+                <button id="clear-logs">🗑️ Clear Logs</button>
+                <p style="margin-top: 10px; font-size: 11px; color: #a0a0a0;">Logs saved: data/brain-trades.csv (timestamp, epic, direction, price, motor_rate, P&L, efficiency)</p>
+            </div>
+            
+            <!-- Trading Goals -->
+            <div class="panel">
+                <h2>🎯 Trading Goals</h2>
+                <p style="font-size: 12px; color: #b0b0b0; margin-bottom: 10px;">Define risk/reward targets for the brain to optimize towards:</p>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
+                    <div>
+                        <label style="display: block; font-size: 11px; color: #a0a0a0; margin-bottom: 3px;">Stop Loss (pips)</label>
+                        <input type="number" id="stop-loss-pips" value="50" min="1" max="500" style="width: 100%; padding: 5px; background-color: #2a2a2a; color: #e0e0e0; border: 1px solid #444; border-radius: 3px;">
+                    </div>
+                    <div>
+                        <label style="display: block; font-size: 11px; color: #a0a0a0; margin-bottom: 3px;">Profit Target (pips)</label>
+                        <input type="number" id="profit-target-pips" value="100" min="1" max="500" style="width: 100%; padding: 5px; background-color: #2a2a2a; color: #e0e0e0; border: 1px solid #444; border-radius: 3px;">
+                    </div>
+                    <div>
+                        <label style="display: block; font-size: 11px; color: #a0a0a0; margin-bottom: 3px;">Min Profit% (acceptable)</label>
+                        <input type="number" id="min-profit-pct" value="5" min="0.1" max="100" step="0.1" style="width: 100%; padding: 5px; background-color: #2a2a2a; color: #e0e0e0; border: 1px solid #444; border-radius: 3px;">
+                    </div>
+                    <div>
+                        <label style="display: block; font-size: 11px; color: #a0a0a0; margin-bottom: 3px;">Risk/Reward Ratio</label>
+                        <input type="number" id="risk-reward-ratio" value="1.5" min="0.5" max="5" step="0.1" style="width: 100%; padding: 5px; background-color: #2a2a2a; color: #e0e0e0; border: 1px solid #444; border-radius: 3px;">
+                    </div>
+                </div>
+                <div style="margin-bottom: 10px;">
+                    <button id="apply-goals" style="margin-right: 10px; padding: 6px 12px; background-color: #1a5c1a; border: 1px solid #3a9c3a; color: #66ff66; border-radius: 3px; cursor: pointer;">✅ Apply Goals</button>
+                    <button id="reset-goals" style="padding: 6px 12px; background-color: #4a2a2a; border: 1px solid #8a4a4a; color: #ff9999; border-radius: 3px; cursor: pointer;">↻ Reset to Defaults</button>
+                </div>
+                <div style="background-color: #1a1a2e; padding: 8px; border-left: 3px solid #4a9cff; border-radius: 3px; font-size: 11px; color: #c0c0c0;">
+                    <div id="goals-status">📌 Goals not set (defaults loaded)</div>
+                </div>
+            </div>
+            
+            <!-- Observer Mode -->
+            <div class="panel">
+                <h2>👁️ Observer Mode (Brain Learning Startup)</h2>
+                <p style="font-size: 12px; color: #b0b0b0; margin-bottom: 10px;">Run initial learning phase: monitor neural activity during market ticks (1-2 sec baseline collection).</p>
+                <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+                    <button id="observer-mode-toggle" style="padding: 8px 16px; background-color: #2a4a6a; border: 2px solid #4a9cff; color: #66ccff; border-radius: 3px; cursor: pointer; flex: 1;">🔵 Start Observer Mode</button>
+                    <button id="observer-stop" style="padding: 8px 16px; background-color: #4a2a2a; border: 2px solid #8a4a4a; color: #ff9999; border-radius: 3px; cursor: pointer; display: none; flex: 1;">⏹️ Stop Observer</button>
+                </div>
+                <div style="background-color: #1a1a2e; padding: 8px; border-left: 3px solid #ffaa44; border-radius: 3px;">
+                    <div id="observer-status" style="font-size: 11px; color: #c0c0c0;">⏸️ Idle. Click to start [30-60 sec baseline observation]</div>
+                </div>
+                <div style="margin-top: 8px;">
+                    <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; color: #b0b0b0; cursor: pointer;">
+                        <input type="checkbox" id="auto-observe-startup" checked style="width: 16px; height: 16px;">
+                        <span>Auto-observe on startup (load brain settings from config, collect baseline)</span>
+                    </label>
+                </div>
+            </div>
+            
+            <!-- Calibration Procedure -->
+            <div class="panel">
+                <h2>🚀 Adaptive Calibration Procedure</h2>
+                <p style="font-size: 12px; color: #b0b0b0; margin-bottom: 10px;">Brain learns by trading: observes baseline, calculates fluid thresholds (no hardcodes), trades, self-adjusts on P&L feedback. Backdata or Live mode.</p>
+                <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+                    <select id="calibration-mode" style="padding: 8px; background-color: #2a2a2a; color: #e0e0e0; border: 1px solid #444; border-radius: 3px;">
+                        <option value="live">📊 Live Trading (Real Ticks)</option>
+                        <option value="backdata">📈 Backdata Replay (Historical)</option>
+                    </select>
+                    <button id="calibration-start" style="padding: 8px 16px; background-color: #2a6a4a; border: 1px solid #66ff99; color: #66ff99; border-radius: 3px; cursor: pointer; flex: 1;">▶️ Start Calibration</button>
+                    <button id="calibration-stop" style="padding: 8px 16px; background-color: #6a2a2a; border: 1px solid #ff6666; color: #ff6666; border-radius: 3px; cursor: pointer; flex: 1; display: none;">⏹️ Stop Calibration</button>
+                </div>
+                <div style="background-color: #1a1a2e; padding: 10px; border-left: 3px solid #66ff99; border-radius: 3px; margin-bottom: 10px;">
+                    <div id="calibration-status" style="font-size: 11px; color: #c0c0c0;">⏸️ Ready. Select mode and click Start.</div>
+                    <div id="calibration-progress" style="font-size: 11px; color: #a0a0a0; margin-top: 5px; display: none;">Progress: --</div>
+                </div>
+                <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;">
+                    <div class="stat-box">
+                        <div class="stat-label">Baseline Motor Avg</div>
+                        <div class="stat-value" id="calib-baseline">--</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">Fluid Threshold</div>
+                        <div class="stat-value" id="calib-threshold">--</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">Trades Executed</div>
+                        <div class="stat-value" id="calib-trades">0</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">Learned w_syn</div>
+                        <div class="stat-value" id="calib-wsyn">--</div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Brain Activity Monitor (Real-time Dev Log) -->
+            <div class="panel">
+                <h2>🧠 Brain Activity Monitor (Real-Time Dev Log)</h2>
+                <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 10px; margin-bottom: 10px;">
+                    <div>
+                        <div style="color: #4a9eff; font-size: 12px; margin-bottom: 8px; text-transform: uppercase;">Activity Log</div>
+                        <div id="brain-log" style="height: 200px; background: rgba(0,0,0,0.5); border: 1px solid #4a7ba7; border-radius: 3px; padding: 8px; overflow-y: auto; font-size: 10px; font-family: 'Courier New', monospace;">
+                            <div style="color: #888;">[Waiting for brain activity...]</div>
+                        </div>
+                    </div>
+                    <div>
+                        <div style="color: #4a9eff; font-size: 12px; margin-bottom: 8px; text-transform: uppercase;">Top 10 Active Neurons</div>
+                        <table id="neuron-table" style="width: 100%; font-size: 10px; border-collapse: collapse;">
+                            <thead>
+                                <tr style="border-bottom: 1px solid #4a7ba7;">
+                                    <th style="text-align: left; padding: 4px; color: #66ff66;">ID</th>
+                                    <th style="text-align: right; padding: 4px; color: #66ff66;">Rate (Hz)</th>
+                                    <th style="text-align: left; padding: 4px; color: #66ff66;">Region</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr><td colspan="3" style="text-align: center; color: #888; padding: 8px;">--</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="grid-2">
+                    <div class="chart-container" style="height: 150px;">
+                        <canvas id="neuron-rates-chart"></canvas>
+                    </div>
+                    <div class="chart-container" style="height: 150px;">
+                        <canvas id="neural-signal-chart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div><!-- end brain panels -->
+    
+    <script src="socket.io/socket.io.js"></script>
+    <script>
+        const socket = io();
+        let priceChart = null;
+        let volumeChart = null;
+        let tickCount = 0;
+        let priceHistory = [];
+        let volumeHistory = [];
+        let timeLabels = [];
+        
+        // Initialize charts
+        function initCharts() {
+            const priceCtx = document.getElementById('priceChart');
+            const volumeCtx = document.getElementById('volumeChart');
+            
+            if (priceCtx && !priceChart) {
+                priceChart = new Chart(priceCtx, {
+                    type: 'line',
+                    data: {
+                        labels: timeLabels,
+                        datasets: [{
+                            label: 'Price',
+                            data: priceHistory,
+                            borderColor: '#ffff66',
+                            backgroundColor: 'rgba(255, 255, 102, 0.1)',
+                            borderWidth: 2,
+                            tension: 0.3,
+                            fill: true,
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: { labels: { color: '#e0e0e0' } },
+                            title: { display: true, text: 'Price History', color: '#e0e0e0' }
+                        },
+                        scales: {
+                            y: {
+                                grid: { color: 'rgba(74, 158, 255, 0.1)' },
+                                ticks: { color: '#a0a0a0' }
+                            },
+                            x: {
+                                grid: { color: 'rgba(74, 158, 255, 0.1)' },
+                                ticks: { color: '#a0a0a0' }
+                            }
+                        }
+                    }
+                });
+            }
+            
+            if (volumeCtx && !volumeChart) {
+                volumeChart = new Chart(volumeCtx, {
+                    type: 'bar',
+                    data: {
+                        labels: timeLabels,
+                        datasets: [{
+                            label: 'Volume',
+                            data: volumeHistory,
+                            backgroundColor: '#66ccff',
+                            borderColor: '#4a9eff',
+                            borderWidth: 1,
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: { labels: { color: '#e0e0e0' } },
+                            title: { display: true, text: 'Volume History', color: '#e0e0e0' }
+                        },
+                        scales: {
+                            y: {
+                                grid: { color: 'rgba(74, 158, 255, 0.1)' },
+                                ticks: { color: '#a0a0a0' }
+                            },
+                            x: {
+                                grid: { color: 'rgba(74, 158, 255, 0.1)' },
+                                ticks: { color: '#a0a0a0' }
+                            }
+                        }
+                    }
+                });
+            }
+        }
+        
+        // Socket event handlers
+        socket.on('connect', () => {
+            document.getElementById('ig-indicator').className = 'status-indicator offline';
+            document.getElementById('ig-status').textContent = 'Waiting for IG...';
+            document.getElementById('conn-state').textContent = 'Connected';
+            
+            // Boot the brain and start IG simulation
+            socket.emit('boot', {}, (response) => {
+                if (response.success) {
+                    console.log('✓ Brain booted with', response.neurons, 'neurons');
+                } else {
+                    console.error('Boot failed:', response.error);
+                }
+            });
+            
+            // Request initial tick analysis data
+            socket.emit('get_tick_analysis', {}, (response) => {
+                if (response && response.success) {
+                    console.log('✓ Initial tick analysis received');
+                }
+            });
+        });
+        
+        socket.on('disconnect', () => {
+            document.getElementById('ig-indicator').className = 'status-indicator offline';
+            document.getElementById('ig-status').textContent = 'IG Disconnected';
+            document.getElementById('conn-state').textContent = 'Disconnected';
+        });
+        
+        socket.on('ig_error', (data) => {
+            document.getElementById('ig-indicator').className = 'status-indicator offline';
+            document.getElementById('ig-status').textContent = '✗ IG Error: ' + (data.error || 'Unknown');
+            console.error('IG error:', data.error);
+        });
+        
+        socket.on('boot_error', (data) => {
+            document.getElementById('ig-indicator').className = 'status-indicator offline';
+            document.getElementById('ig-status').textContent = '✗ Boot Error: ' + (data.error || 'Unknown');
+            console.error('Boot error:', data.error);
+        });
+        
+        socket.on('ig_demo_mode', (data) => {
+            document.getElementById('ig-indicator').className = 'status-indicator orange';
+            document.getElementById('ig-status').textContent = '⚠️ Demo Mode (No Real Creds)';
+            console.warn('Demo mode active:', data.message);
+        });
+        
+        socket.on('ig_connected', () => {
+            document.getElementById('ig-indicator').className = 'status-indicator online';
+            document.getElementById('ig-status').textContent = '✓ IG Connected (Live)';
+        });
+        
+        socket.on('account_update', (data) => {
+            if (data.accountId) document.getElementById('account-id').textContent = data.accountId;
+            if (data.balance) document.getElementById('balance').textContent = data.balance.toFixed(2);
+        });
+        
+        socket.on('tick', (tick) => {
+            if (!tick) return;
+            
+            tickCount++;
+            document.getElementById('tick-count').textContent = tickCount;
+            
+            const now = new Date();
+            const timeStr = now.toLocaleTimeString();
+            document.getElementById('last-tick-time').textContent = timeStr;
+            
+            // Safe value extraction with fallbacks
+            const bid = parseFloat(tick.bid) || 0;
+            const ask = parseFloat(tick.ask) || 0;
+            const price = parseFloat(tick.price) || (bid + ask) / 2;
+            const volume = parseInt(tick.volume) || 0;
+            const spread = (ask - bid).toFixed(5);
+            
+            // Update tick feed
+            const feed = document.getElementById('tick-feed');
+            if (feed.querySelector('div[style*="Waiting"]')) {
+                feed.innerHTML = '';
+            }
+            
+            const tickDiv = document.createElement('div');
+            tickDiv.className = 'tick-item';
+            tickDiv.innerHTML = `
+                <span class="tick-time">${timeStr}</span>
+                <span class="tick-bid">${bid.toFixed(5)}</span>
+                <span class="tick-ask">${ask.toFixed(5)}</span>
+                <span class="tick-price">${price.toFixed(5)}</span>
+                <span class="tick-volume">${volume}</span>
+                <span class="tick-spread">${spread}</span>
+            `;
+            feed.insertBefore(tickDiv, feed.firstChild);
+            
+            // Keep only last 20 ticks visible
+            while (feed.children.length > 20) {
+                feed.lastChild.remove();
+            }
+            
+            // Update price/volume history for charts
+            priceHistory.push(price);
+            volumeHistory.push(volume);
+            timeLabels.push(timeStr);
+            
+            if (priceHistory.length > 50) {
+                priceHistory.shift();
+                volumeHistory.shift();
+                timeLabels.shift();
+            }
+            
+            if (priceChart) {
+                priceChart.data.labels = timeLabels;
+                priceChart.data.datasets[0].data = priceHistory;
+                priceChart.update('none');
+            }
+            
+            if (volumeChart) {
+                volumeChart.data.labels = timeLabels;
+                volumeChart.data.datasets[0].data = volumeHistory;
+                volumeChart.update('none');
+            }
+        });
+        
+        socket.on('tick_analysis', (data) => {
+            const analysis = data.analysis;
+            const summary = data.summary;
+            
+            // Update microstructure stats
+            if (summary) {
+                document.getElementById('price-current').textContent = 
+                    summary.price_stats?.current?.toFixed(4) || '--';
+                document.getElementById('price-range').textContent = 
+                    `${summary.price_stats?.min?.toFixed(4) || '--'} to ${summary.price_stats?.max?.toFixed(4) || '--'}`;
+                document.getElementById('volatility').textContent = 
+                    (summary.volatility?.toFixed(6) || '0.000000');
+                document.getElementById('spread-current').textContent = 
+                    (summary.spread_stats?.current?.toFixed(5) || '--');
+                document.getElementById('spread-avg').textContent = 
+                    (summary.spread_stats?.average?.toFixed(5) || '--');
+                document.getElementById('volume-current').textContent = 
+                    summary.volume_stats?.current || '--';
+            }
+            
+            // Update trading signals
+            if (analysis) {
+                document.getElementById('signal-condition').textContent = 
+                    analysis.market_condition || '--';
+                document.getElementById('signal-trend').textContent = 
+                    analysis.trend || '--';
+                document.getElementById('signal-level').textContent = 
+                    analysis.price_level || '--';
+                document.getElementById('signal-volume').textContent = 
+                    analysis.volume_activity || '--';
+                document.getElementById('signal-spread').textContent = 
+                    analysis.spread_size?.classification || '--';
+                document.getElementById('signal-imbalance').textContent = 
+                    analysis.signals?.bid_ask_imbalance || '--';
+                document.getElementById('signal-breakout').textContent = 
+                    (analysis.signals?.volume_breakout ? 'YES' : 'NO');
+                document.getElementById('signal-momentum').textContent = 
+                    analysis.signals?.price_momentum || '--';
+            }
+        });
+        
+        socket.on('brain_booted', (data) => {
+            document.getElementById('brain-indicator').className = 'status-indicator online';
+        });
+        
+        socket.on('neural_activity', (data) => {
+            console.log('[Neural Activity]', data);
+            // Update UI if data includes rates
+            if (data.motor_rates) {
+                console.log('Motor rates:', data.motor_rates);
+            }
+        });
+        
+        socket.on('brain_calibrated', (data) => {
+            console.log('[Brain Calibrated]', data);
+        });
+        
+        socket.on('trade', (data) => {
+            const historyDiv = document.getElementById('trade-history');
+            if (historyDiv.querySelector('div[style*="No trades"]')) {
+                historyDiv.innerHTML = '';
+            }
+            
+            const tradeDiv = document.createElement('div');
+            tradeDiv.className = 'trade-item ' + (data.direction === 'BUY' ? 'buy' : 'sell');
+            tradeDiv.innerHTML = `
+                <span class="trade-time">${new Date().toLocaleTimeString()}</span>
+                <span class="${data.direction === 'BUY' ? 'trade-buy' : 'trade-sell'}">${data.direction}</span>
+                <span>${data.size}</span>
+                <span class="trade-price">${data.price.toFixed(1)}</span>
+                <span>${data.dealId}</span>
+            `;
+            historyDiv.insertBefore(tradeDiv, historyDiv.firstChild);
+            
+            while (historyDiv.children.length > 20) {
+                historyDiv.lastChild.remove();
+            }
+        });
+        
+        // Tab switching
+        document.getElementById('trading-btn').addEventListener('click', function() {
+            document.getElementById('trading-content').classList.add('active');
+            document.getElementById('brain-content').classList.remove('active');
+            this.classList.add('active');
+            document.getElementById('brain-btn').classList.remove('active');
+        });
+        
+        document.getElementById('brain-btn').addEventListener('click', function() {
+            document.getElementById('trading-content').classList.remove('active');
+            document.getElementById('brain-content').classList.add('active');
+            this.classList.add('active');
+            document.getElementById('trading-btn').classList.remove('active');
+        });
+        
+        // SVG region click handlers
+        document.getElementById('region-optic_lobe')?.addEventListener('click', function() {
+            const isActive = this.getAttribute('data-active') === 'true';
+            this.setAttribute('data-active', !isActive);
+            this.setAttribute('fill', !isActive ? '#00ff00' : '#ff6666');
+            console.log('[Brain] Optic Lobe toggled:', !isActive);
+        });
+        document.getElementById('region-mechanosensory')?.addEventListener('click', function() {
+            const isActive = this.getAttribute('data-active') === 'true';
+            this.setAttribute('data-active', !isActive);
+            this.setAttribute('fill', !isActive ? '#00ff00' : '#66ff66');
+            console.log('[Brain] Mechanosensory toggled:', !isActive);
+        });
+        
+        // Task assignment
+        document.getElementById('test-task').addEventListener('click', function() {
+            const priceChecked = document.getElementById('task-price_monitor').checked;
+            const volChecked = document.getElementById('task-volume_pressure').checked;
+            
+            if (priceChecked) socket.emit('brain_task_assign', {task: 'price_monitor', region: 'optic_lobe'});
+            if (volChecked) socket.emit('brain_task_assign', {task: 'volume_pressure', region: 'mechanosensory'});
+            
+            console.log('✅ Tasks activated:', {price: priceChecked, volume: volChecked});
+        });
+        
+        // Calibration sliders update labels
+        document.getElementById('cal-r_poi')?.addEventListener('input', function() {
+            document.getElementById('r-poi-val').textContent = this.value;
+        });
+        document.getElementById('cal-tau')?.addEventListener('input', function() {
+            document.getElementById('tau-val').textContent = this.value;
+        });
+        document.getElementById('cal-w_syn')?.addEventListener('input', function() {
+            document.getElementById('w-syn-val').textContent = parseFloat(this.value).toFixed(1);
+        });
+        
+        // Apply calibration
+        document.getElementById('apply-calibration')?.addEventListener('click', function() {
+            const r_poi = parseInt(document.getElementById('cal-r_poi').value);
+            const tau = parseInt(document.getElementById('cal-tau').value);
+            const w_syn = parseFloat(document.getElementById('cal-w_syn').value);
+            
+            socket.emit('brain_calibrate', {r_poi, tau_syn: tau, w_syn: w_syn}, (res) => {
+                if (res.success) {
+                    console.log('✓ Calibration applied:', {r_poi, tau, w_syn});
+                } else {
+                    console.error('Calibration failed:', res.error);
+                }
+            });
+        });
+        
+        // Feedback buttons
+        document.getElementById('pos-feedback')?.addEventListener('click', function() {
+            socket.emit('brain_feedback', {type: 'positive', region: 'optic_lobe'});
+            console.log('👍 Positive feedback sent');
+        });
+        
+        document.getElementById('neg-feedback')?.addEventListener('click', function() {
+            socket.emit('brain_feedback', {type: 'negative', region: 'optic_lobe'});
+            console.log('👎 Negative feedback sent');
+        });
+        
+        // Observe
+        document.getElementById('observe-test')?.addEventListener('click', function() {
+            socket.emit('observe');
+            console.log('👁️ Observing neural activity...');
+        });
+        
+        // Metrics charts
+        let efficiencyChart = null;
+        let correlationChart = null;
+        
+        function initMetricsCharts() {
+            const effCtx = document.getElementById('efficiencyChart');
+            if (effCtx && !efficiencyChart) {
+                efficiencyChart = new Chart(effCtx, {
+                    type: 'line',
+                    data: {
+                        labels: [],
+                        datasets: [{
+                            label: 'Stim Efficiency',
+                            data: [],
+                            borderColor: '#ffff66',
+                            backgroundColor: 'rgba(255,255,102,0.1)',
+                            tension: 0.3,
+                            fill: true
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: { legend: { labels: { color: '#e0e0e0' } } },
+                        scales: {
+                            y: { grid: { color: 'rgba(74,158,255,0.1)' }, ticks: { color: '#a0a0a0' } },
+                            x: { grid: { color: 'rgba(74,158,255,0.1)' }, ticks: { color: '#a0a0a0' } }
+                        }
+                    }
+                });
+            }
+            
+            const corrCtx = document.getElementById('correlationChart');
+            if (corrCtx && !correlationChart) {
+                correlationChart = new Chart(corrCtx, {
+                    type: 'line',
+                    data: {
+                        labels: [],
+                        datasets: [{
+                            label: 'Trade Correlation',
+                            data: [],
+                            borderColor: '#66ff66',
+                            backgroundColor: 'rgba(102,255,102,0.1)',
+                            tension: 0.3,
+                            fill: true
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: { legend: { labels: { color: '#e0e0e0' } } },
+                        scales: {
+                            y: { grid: { color: 'rgba(74,158,255,0.1)' }, ticks: { color: '#a0a0a0' }, min: -1, max: 1 },
+                            x: { grid: { color: 'rgba(74,158,255,0.1)' }, ticks: { color: '#a0a0a0' } }
+                        }
+                    }
+                });
+            }
+        }
+        
+        socket.on('metrics_update', (data) => {
+            document.getElementById('avg-efficiency').textContent = data.avg_efficiency;
+            document.getElementById('trade-corr').textContent = data.trade_correlation;
+            
+            if (efficiencyChart) {
+                const now = new Date().toLocaleTimeString();
+                data.efficiency_history.forEach((eff, i) => {
+                    if (i >= efficiencyChart.data.labels.length) {
+                        efficiencyChart.data.labels.push(now);
+                        efficiencyChart.data.datasets[0].data.push(eff);
+                    }
+                });
+                efficiencyChart.update('none');
+            }
+            
+            if (correlationChart) {
+                const now = new Date().toLocaleTimeString();
+                data.correlation_history.forEach((corr, i) => {
+                    if (i >= correlationChart.data.labels.length) {
+                        correlationChart.data.labels.push(now);
+                        correlationChart.data.datasets[0].data.push(corr);
+                    }
+                });
+                correlationChart.update('none');
+            }
+        });
+        
+        // Export & Clear logs
+        document.getElementById('export-csv')?.addEventListener('click', function() {
+            socket.emit('export_logs', {}, (res) => {
+                if (res.success) {
+                    const blob = new Blob([res.csv], { type: 'text/csv;charset=utf-8;' });
+                    const link = document.createElement('a');
+                    link.href = URL.createObjectURL(blob);
+                    link.download = `brain-trades-${new Date().toISOString().slice(0, 10)}.csv`;
+                    link.click();
+                    console.log(`✓ Exported ${res.count} trades to CSV`);
+                }
+            });
+        });
+        
+        document.getElementById('clear-logs')?.addEventListener('click', function() {
+            if (confirm('Clear all trade logs?')) {
+                socket.emit('clear_logs', {}, (res) => {
+                    if (res.success) {
+                        document.getElementById('avg-efficiency').textContent = '--';
+                        document.getElementById('trade-corr').textContent = '--';
+                        console.log('✓ Logs cleared');
+                    }
+                });
+            }
+        });
+        
+        // Trading Goals
+        document.getElementById('apply-goals')?.addEventListener('click', function() {
+            const goals = {
+                stop_loss_pips: parseFloat(document.getElementById('stop-loss-pips').value),
+                profit_target_pips: parseFloat(document.getElementById('profit-target-pips').value),
+                min_profit_pct: parseFloat(document.getElementById('min-profit-pct').value),
+                risk_reward_ratio: parseFloat(document.getElementById('risk-reward-ratio').value)
+            };
+            
+            socket.emit('set_trading_goals', goals, (res) => {
+                if (res && res.success) {
+                    document.getElementById('goals-status').innerHTML = `✅ Goals applied: SL=${goals.stop_loss_pips}pips, TP=${goals.profit_target_pips}pips, RR=${goals.risk_reward_ratio}x`;
+                    console.log('[Trading Goals]', goals);
+                } else {
+                    console.error('Failed to apply goals', res?.error);
+                }
+            });
+        });
+        
+        document.getElementById('reset-goals')?.addEventListener('click', function() {
+            document.getElementById('stop-loss-pips').value = '50';
+            document.getElementById('profit-target-pips').value = '100';
+            document.getElementById('min-profit-pct').value = '5';
+            document.getElementById('risk-reward-ratio').value = '1.5';
+            document.getElementById('goals-status').innerHTML = '📌 Reset to defaults (50/100 pips, 5% min, 1.5x RR)';
+        });
+        
+        // Observer Mode
+        let observerRunning = false;
+        let observerInterval = null;
+        
+        document.getElementById('observer-mode-toggle')?.addEventListener('click', function() {
+            if (!observerRunning) {
+                observerRunning = true;
+                document.getElementById('observer-mode-toggle').style.display = 'none';
+                document.getElementById('observer-stop').style.display = 'block';
+                document.getElementById('observer-status').innerHTML = '🟢 OBSERVING... Collecting baseline (30-60 sec)';
+                
+                let observeCount = 0;
+                let maxObserve = 60;  // 1 sec * 60 = 60 sec observation window
+                
+                observerInterval = setInterval(async () => {
+                    socket.emit('observe', (rates) => {
+                        observeCount++;
+                        document.getElementById('observer-status').innerHTML = `🟢 Observing [${observeCount}/${maxObserve}]... Rates: ${JSON.stringify(rates).slice(0, 50)}...`;
+                        
+                        // Log to observer-log.csv
+                        socket.emit('log_observer', {
+                            timestamp: new Date().toISOString(),
+                            observe_count: observeCount,
+                            motor_rate: rates.motor_rate || 0,
+                            all_rates: JSON.stringify(rates)
+                        });
+                        
+                        if (observeCount >= maxObserve) {
+                            clearInterval(observerInterval);
+                            observerRunning = false;
+                            document.getElementById('observer-mode-toggle').style.display = 'block';
+                            document.getElementById('observer-stop').style.display = 'none';
+                            document.getElementById('observer-status').innerHTML = `✅ Observer complete! Collected ${observeCount} samples. Ready to trade.`;
+                        }
+                    });
+                }, 1000);  // 1 sec interval
+            }
+        });
+        
+        document.getElementById('observer-stop')?.addEventListener('click', function() {
+            if (observerInterval) {
+                clearInterval(observerInterval);
+                observerRunning = false;
+                document.getElementById('observer-mode-toggle').style.display = 'block';
+                document.getElementById('observer-stop').style.display = 'none';
+                document.getElementById('observer-status').innerHTML = '⏸️ Observer stopped manually.';
+            }
+        });
+        
+        // Auto-observe on startup
+        socket.on('brain_booted', () => {
+            if (document.getElementById('auto-observe-startup')?.checked) {
+                console.log('[Auto-Observer] Brain booted, starting learning phase...');
+                setTimeout(() => {
+                    document.getElementById('observer-mode-toggle').click();
+                }, 1000);
+            }
+        });
+        
+        // Initialize on full page load
+        setTimeout(() => { initCharts(); initMetricsCharts(); }, 500);
+        
+        // ============ PHASE 7: Instrument Selector, Backtesting, Neural Trading ============
+        
+        // Instrument search with debounce
+        let searchTimeout;
+        document.getElementById('instrument-search')?.addEventListener('input', function(e) {
+            clearTimeout(searchTimeout);
+            const term = e.target.value.trim();
+            
+            if (term.length < 2) {
+                document.getElementById('instrument-results').style.display = 'none';
+                return;
+            }
+            
+            searchTimeout = setTimeout(() => {
+                socket.emit('search_instruments', { term }, (res) => {
+                    if (res && res.success && res.instruments) {
+                        const resultsDiv = document.getElementById('instrument-results');
+                        resultsDiv.innerHTML = '';
+                        res.instruments.forEach(inst => {
+                            const item = document.createElement('div');
+                            item.style.cssText = 'padding: 8px; border-bottom: 1px solid #444; cursor: pointer; hover-background: rgba(74, 158, 255, 0.2);';
+                            item.textContent = `${inst.name} (${inst.epic}) - Bid: ${inst.bid.toFixed(3)}, Ask: ${inst.ask.toFixed(3)}`;
+                            item.addEventListener('click', () => selectInstrument(inst));
+                            resultsDiv.appendChild(item);
+                        });
+                        resultsDiv.style.display = 'block';
+                    }
+                });
+            }, 400); // 400ms debounce per IG-TRADE-RULES.md
+        });
+        
+        function selectInstrument(inst) {
+            document.getElementById('instrument-selected').innerHTML = `
+                <div style="color: #a0a0a0; font-size: 11px;">Selected Instrument</div>
+                <div style="color: #66ff66; font-weight: bold;">${inst.name} (${inst.epic})</div>
+                <div style="font-size: 10px; color: #a0a0a0; margin-top: 4px;">Pip Value: ${inst.pip_value} | Min Size: ${inst.min_size}</div>
+            `;
+            document.getElementById('instrument-results').style.display = 'none';
+            document.getElementById('instrument-search').value = '';
+            
+            // Enable backtest and trade buttons
+            document.getElementById('start-backtest').disabled = false;
+            document.getElementById('test-buy').disabled = false;
+            document.getElementById('test-sell').disabled = false;
+            
+            // Auto-start backtest
+            socket.emit('instrument_selected', { epic: inst.epic });
+            console.log(`[Instrument Selected] ${inst.name} (${inst.epic})`);
+        }
+        
+        // Account balance update
+        socket.on('account_update', (data) => {
+            if (data.balance) {
+                document.getElementById('acc-balance').textContent = `$${data.balance.toFixed(2)}`;
+                document.getElementById('acc-pnl').textContent = `$${data.pnl.toFixed(2)}`;
+                const marginPct = data.margin_pct ? data.margin_pct.toFixed(1) : '--';
+                document.getElementById('acc-margin').textContent = `${marginPct}% / $${(data.available || data.balance).toFixed(2)}`;
+            }
+        });
+        
+        // Calibration procedure
+        let calibrationRunning = false;
+        let calibrationData = {
+            baseline_motor_rate: 0,
+            threshold: 0,
+            trades_executed: 0,
+            win_count: 0,
+            w_syn_adjusted: 1.0
+        };
+        
+        document.getElementById('calibration-start')?.addEventListener('click', function() {
+            if (calibrationRunning) return;
+            
+            const mode = document.getElementById('calibration-mode').value;
+            calibrationRunning = true;
+            
+            document.getElementById('calibration-start').style.display = 'none';
+            document.getElementById('calibration-stop').style.display = 'block';
+            document.getElementById('calibration-status').innerHTML = `🟢 Calibration starting in ${mode} mode...`;
+            document.getElementById('calibration-progress').style.display = 'block';
+            
+            socket.emit('calibration_start', { mode }, (res) => {
+                if (res && res.success) {
+                    console.log('[Calibration] Started:', res);
+                }
+            });
+        });
+        
+        document.getElementById('calibration-stop')?.addEventListener('click', function() {
+            if (!calibrationRunning) return;
+            calibrationRunning = false;
+            
+            document.getElementById('calibration-start').style.display = 'block';
+            document.getElementById('calibration-stop').style.display = 'none';
+            document.getElementById('calibration-status').innerHTML = '⏹️ Calibration stopped by user.';
+            
+            socket.emit('calibration_stop', {});
+        });
+        
+        socket.on('calibration_update', (data) => {
+            if (data.baseline) {
+                document.getElementById('calib-baseline').textContent = `${data.baseline.toFixed(2)}Hz`;
+            }
+            if (data.threshold) {
+                document.getElementById('calib-threshold').textContent = `${data.threshold.toFixed(2)}Hz`;
+            }
+            if (data.trades_executed !== undefined) {
+                document.getElementById('calib-trades').textContent = data.trades_executed;
+            }
+            if (data.w_syn) {
+                document.getElementById('calib-wsyn').textContent = data.w_syn.toFixed(3);
+            }
+            if (data.progress) {
+                document.getElementById('calibration-progress').textContent = `Progress: ${data.progress}`;
+            }
+            if (data.status) {
+                document.getElementById('calibration-status').innerHTML = `${data.status}`;
+            }
+        });
+        
+        // Brain Activity Monitor - socket listener
+        socket.on('neural_activity', (data) => {
+            // Add to log
+            const logDiv = document.getElementById('brain-log');
+            const timestamp = new Date().toLocaleTimeString();
+            const logEntry = document.createElement('div');
+            
+            let logText = `[${timestamp}] `;
+            if (data.stim_region && data.stim_intensity) {
+                logText += `Stim ${data.stim_region} ${data.stim_intensity.toFixed(0)}Hz → `;
+            }
+            if (data.motor_rates) {
+                logText += `motor=${data.motor_rates.toFixed(2)}Hz`;
+            }
+            if (data.signal) {
+                logText += ` → ${data.signal.direction.toUpperCase()} signal`;
+            }
+            
+            logEntry.textContent = logText;
+            logEntry.style.cssText = 'padding: 2px 0; border-bottom: 1px solid #2a2a2a;';
+            
+            if (logDiv.querySelector('[style*="Waiting"]')) {
+                logDiv.innerHTML = '';
+            }
+            logDiv.insertBefore(logEntry, logDiv.firstChild);
+            
+            // Keep last 100 logs
+            while (logDiv.children.length > 100) {
+                logDiv.lastChild.remove();
+            }
+            
+            // Update neuron table (top 10 firers)
+            if (data.top_firers && data.top_firers.length > 0) {
+                const tbody = document.querySelector('#neuron-table tbody');
+                tbody.innerHTML = '';
+                data.top_firers.slice(0, 10).forEach(neuron => {
+                    const row = `<tr><td style="padding: 4px;">${neuron.id}</td><td style="text-align: right; padding: 4px;">${neuron.rate.toFixed(1)}</td><td style="padding: 4px;">${neuron.region}</td></tr>`;
+                    tbody.innerHTML += row;
+                });
+            }
+        });
+        
+        // Manual test BUY
+        document.getElementById('test-buy')?.addEventListener('click', function() {
+            socket.emit('test_trade', { direction: 'BUY' }, (res) => {
+                if (res && res.success) {
+                    console.log(`[Test BUY] Executed: ${res.message}`);
+                    alert(`BUY order placed: ${res.message}`);
+                } else {
+                    alert(`BUY failed: ${res?.error || 'Unknown error'}`);
+                }
+            });
+        });
+        
+        // Manual test SELL
+        document.getElementById('test-sell')?.addEventListener('click', function() {
+            socket.emit('test_trade', { direction: 'SELL' }, (res) => {
+                if (res && res.success) {
+                    console.log(`[Test SELL] Executed: ${res.message}`);
+                    alert(`SELL order placed: ${res.message}`);
+                } else {
+                    alert(`SELL failed: ${res?.error || 'Unknown error'}`);
+                }
+            });
+        });
+        
+        // Auto-backtest button
+        document.getElementById('start-backtest')?.addEventListener('click', function() {
+            this.disabled = true;
+            this.textContent = '⏳ Running Backtest...';
+            
+            socket.emit('start_backtest', {}, (res) => {
+                this.disabled = false;
+                this.textContent = '⚡ Auto-Backtest Complete';
+                if (res && res.success) {
+                    console.log('[Backtest] Complete:', res.results);
+                    alert(`Backtest done! Best score: ${(res.results.best_score * 100).toFixed(1)}%`);
+                }
+                setTimeout(() => { this.textContent = '⚡ Auto-Backtest Instrument'; }, 3000);
+            });
+        });
+    </script>
+</body>
+</html>
