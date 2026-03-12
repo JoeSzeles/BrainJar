@@ -27,8 +27,11 @@ import fs from 'fs';
 // Setup __dirname for ES modules
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// Load .env from parent directory (BrainJar/)
+// Load .env from current directory
 dotenv.config({ path: path.join(__dirname, '.env') });
+console.log('[ENV] Loading .env from:', path.join(__dirname, '.env'));
+console.log('[ENV] IG_USERNAME loaded:', process.env.IG_USERNAME ? 'YES' : 'NO');
+console.log('[ENV] IG_API_ENDPOINT:', process.env.IG_API_ENDPOINT);
 
 const configPath = path.join(__dirname, '../brainjar.config.json');
 let config;
@@ -71,7 +74,7 @@ app.get('/api/ticks', (req, res) => {
   res.json(response);
 });
 
-let brain = null;
+// Brain operations now use HTTP calls to real brain engine on port 8000
 let ig = null;
 let tickRecorder = null;
 let memory = null;
@@ -154,7 +157,7 @@ async function initializeManagers() {
           console.log('[TICK MONITOR] 🧠 Processing brain stimulation for epic:', epic);
 
           // Price monitor task
-          if (assignedTasks.price_monitor && brain && config.neuron_mappings) {
+          if (assignedTasks.price_monitor && config.neuron_mappings) {
             const region = assignedTasks.price_monitor;
             const neurons = config.neuron_mappings[region];
             if (neurons && neurons.length > 0) {
@@ -163,18 +166,40 @@ async function initializeManagers() {
               prevPrices[epic] = tick.price || 1.1;
               const intensity = Math.abs(delta) * 100000; // scale to reasonable Hz
               console.log(`[TICK MONITOR] 🧠 Price Δ${delta.toFixed(6)} → Stim ${region.slice(0,10)}... ${intensity.toFixed(0)}Hz`);
-              await brain.stimulate(neurons.slice(0, 5), intensity); // sample first 5 neurons
+              try {
+                await fetch('http://127.0.0.1:8000/stimulate', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    neuron_ids: neurons.slice(0, 5),
+                    intensity: intensity
+                  })
+                });
+              } catch (stimErr) {
+                console.error('[TICK MONITOR] ❌ Brain stimulation HTTP error:', stimErr.message);
+              }
             }
           }
 
           // Volume pressure task
-          if (assignedTasks.volume_pressure && brain && config.neuron_mappings && tick.volume) {
+          if (assignedTasks.volume_pressure && config.neuron_mappings && tick.volume) {
             const region = assignedTasks.volume_pressure;
             const neurons = config.neuron_mappings[region];
             if (neurons && neurons.length > 0) {
               const intensity = Math.min((tick.volume / 1000) * 50, 200); // cap at 200Hz
               console.log(`[TICK MONITOR] 🧠 Vol ${tick.volume} → Stim ${region.slice(0,10)}... ${intensity.toFixed(0)}Hz`);
-              await brain.stimulate(neurons.slice(0, 5), intensity);
+              try {
+                await fetch('http://127.0.0.1:8000/stimulate', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    neuron_ids: neurons.slice(0, 5),
+                    intensity: intensity
+                  })
+                });
+              } catch (stimErr) {
+                console.error('[TICK MONITOR] ❌ Brain stimulation HTTP error:', stimErr.message);
+              }
             }
           }
         } catch (brainErr) {
@@ -230,16 +255,25 @@ io.on('connection', (socket) => {
   // Initialize on first connection
   socket.on('boot', async (data, callback) => {
     try {
-      // Try to boot brain, but don't fail if it doesn't work
+      // Connect to REAL brain engine on port 8000
       let brainBooted = false;
       try {
-        if (!brain) {
-          brain = new BrainJar();
-          await brain.boot();
+        console.log('[BRAIN] Connecting to REAL brain engine on port 8000...');
+        const response = await fetch('http://127.0.0.1:8000/boot', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({})
+        });
+
+        if (response.ok) {
           brainBooted = true;
+          console.log('[BRAIN] ✅ REAL brain engine booted successfully');
+        } else {
+          console.log('[BRAIN] ❌ Brain boot failed:', response.status);
         }
       } catch (brainErr) {
-        console.log('[TICK MONITOR] ⚠️ Brain boot failed, but continuing with IG setup:', brainErr.message);
+        console.log('[BRAIN] ❌ Could not connect to brain engine:', brainErr.message);
+        console.log('[BRAIN] Engine not ready, but continuing with mock mode');
       }
 
       await initializeManagers();
@@ -277,11 +311,18 @@ io.on('connection', (socket) => {
       }
       
       let brainStatus = { neurons_count: 0, synapses_count: 0, loaded: false };
-      if (brainBooted && brain) {
+      if (brainBooted) {
         try {
-          brainStatus = await brain.getStatus();
+          console.log('[BRAIN] Getting REAL brain status...');
+          const response = await fetch('http://127.0.0.1:8000/status');
+          if (response.ok) {
+            brainStatus = await response.json();
+            console.log('[BRAIN] ✅ REAL brain status:', brainStatus);
+          } else {
+            console.log('[BRAIN] ❌ Could not get brain status:', response.status);
+          }
         } catch (e) {
-          console.log('[TICK MONITOR] ⚠️ Could not get brain status:', e.message);
+          console.log('[BRAIN] ❌ Could not connect to brain status:', e.message);
         }
       }
 
@@ -359,7 +400,7 @@ io.on('connection', (socket) => {
             const epic = tick.epic || 'CS.D.CFASILVER.CFA.IP';
             console.log('[TICK MONITOR] 🧠 Processing brain stimulation for epic:', epic);
 
-            if (assignedTasks.price_monitor && brain && config.neuron_mappings) {
+            if (assignedTasks.price_monitor && config.neuron_mappings) {
               const region = assignedTasks.price_monitor;
               const neurons = config.neuron_mappings[region];
               if (neurons && neurons.length > 0) {
@@ -368,17 +409,39 @@ io.on('connection', (socket) => {
                 prevPrices[epic] = tick.price || 1.1;
                 const intensity = Math.abs(delta) * 100000;
                 console.log(`[TICK MONITOR] 🧠 Price Δ${delta.toFixed(6)} → Stim ${region.slice(0,10)}... ${intensity.toFixed(0)}Hz`);
-                await brain.stimulate(neurons.slice(0, 5), intensity);
+                try {
+                  await fetch('http://127.0.0.1:8000/stimulate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      neuron_ids: neurons.slice(0, 5),
+                      intensity: intensity
+                    })
+                  });
+                } catch (stimErr) {
+                  console.error('[TICK MONITOR] ❌ Brain stimulation HTTP error:', stimErr.message);
+                }
               }
             }
 
-            if (assignedTasks.volume_pressure && brain && config.neuron_mappings && tick.volume) {
+            if (assignedTasks.volume_pressure && config.neuron_mappings && tick.volume) {
               const region = assignedTasks.volume_pressure;
               const neurons = config.neuron_mappings[region];
               if (neurons && neurons.length > 0) {
                 const intensity = Math.min((tick.volume / 1000) * 50, 200);
                 console.log(`[TICK MONITOR] 🧠 Vol ${tick.volume} → Stim ${region.slice(0,10)}... ${intensity.toFixed(0)}Hz`);
-                await brain.stimulate(neurons.slice(0, 5), intensity);
+                try {
+                  await fetch('http://127.0.0.1:8000/stimulate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      neuron_ids: neurons.slice(0, 5),
+                      intensity: intensity
+                    })
+                  });
+                } catch (stimErr) {
+                  console.error('[TICK MONITOR] ❌ Brain stimulation HTTP error:', stimErr.message);
+                }
               }
             }
           } catch (brainErr) {
@@ -437,23 +500,27 @@ io.on('connection', (socket) => {
 
   socket.on('reconnect_brain', async (data, callback) => {
     try {
-      console.log('[RECONNECT] Attempting brain reconnection...');
+      console.log('[BRAIN] Attempting REAL brain reconnection...');
 
-      if (brain) {
-        // Try to disconnect or reset brain
-        try {
-          // No explicit disconnect method, just set to null
-          brain = null;
-        } catch (e) {
-          console.log('[RECONNECT] Brain reset error (ignoring):', e.message);
-        }
+      // Try to boot the real brain engine
+      console.log('[BRAIN] Calling REAL brain boot...');
+      const bootResponse = await fetch('http://127.0.0.1:8000/boot', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      });
+
+      if (!bootResponse.ok) {
+        throw new Error(`Brain boot failed: ${bootResponse.status}`);
       }
 
-      // Reinitialize brain
-      brain = new BrainJar();
-      await brain.boot();
+      console.log('[BRAIN] Getting REAL brain status...');
+      const statusResponse = await fetch('http://127.0.0.1:8000/status');
+      if (!statusResponse.ok) {
+        throw new Error(`Brain status failed: ${statusResponse.status}`);
+      }
 
-      const brainStatus = await brain.getStatus();
+      const brainStatus = await statusResponse.json();
 
       io.emit('brain_booted', {
         neurons: brainStatus.neurons_count,
@@ -491,9 +558,25 @@ io.on('connection', (socket) => {
 
   socket.on('stimulate', async (data, callback) => {
     try {
+      console.log('[BRAIN] Calling REAL brain stimulate...');
       const start = Date.now();
-      const res = await brain.stimulate(data.neuron_ids, data.intensity);
+      const response = await fetch('http://127.0.0.1:8000/stimulate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          neuron_ids: data.neuron_ids,
+          intensity: data.intensity
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`Brain stimulate failed: ${response.status}`);
+      }
+
+      const res = await response.json();
       const elapsed = Date.now() - start;
+
+      console.log('[BRAIN] ✅ REAL brain stimulation result:', res);
 
       io.emit('brain_stimulated', {
         neurons: data.neuron_ids,
@@ -509,18 +592,25 @@ io.on('connection', (socket) => {
 
       callback({ success: true, elapsed_ms: elapsed });
     } catch (err) {
-      console.error('Stimulate error:', err.message);
+      console.error('[BRAIN] Stimulate error:', err.message);
       callback({ success: false, error: err.message });
     }
   });
 
   socket.on('observe', async (data, callback) => {
     try {
-      if (!brain || !brain.isBooted) {
-        callback({ success: false, error: 'Brain not booted. Please wait for boot to complete.' });
-        return;
+      console.log('[BRAIN] Calling REAL brain observe...');
+      const response = await fetch('http://127.0.0.1:8000/observe', {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json' }
+      });
+
+      if (!response.ok) {
+        throw new Error(`Brain observe failed: ${response.status}`);
       }
-      const res = await brain.observe();
+
+      const res = await response.json();
+      console.log('[BRAIN] ✅ REAL brain observe result:', res);
       
       // Extract motor rate
       const motor_rate = res.motor_rates || 0;
@@ -570,27 +660,75 @@ io.on('connection', (socket) => {
   });
 
   socket.on('place_order', async (data, callback) => {
+    console.log('🎯 [BACKEND] place_order event received');
+    console.log('📊 [BACKEND] Order data:', data);
+    console.log('🔍 [BACKEND] Data type:', typeof data);
+    console.log('📈 [BACKEND] Data keys:', data ? Object.keys(data) : 'null');
+    console.log('💰 [BACKEND] Epic:', data.epic);
+    console.log('📊 [BACKEND] Direction:', data.direction);
+    console.log('💵 [BACKEND] Size:', data.size);
+
+    // IG Demo accounts work exactly like live accounts - place REAL trades with demo money
+    console.log('💰 [BACKEND] Placing REAL trade on IG account (demo or live)');
+
+    // Real trading for live accounts
     try {
-      if (!ig || !ig.connected) {
+      console.log('🔗 [BACKEND] Checking IG connection...');
+      if (!ig) {
+        console.error('❌ [BACKEND] IG adapter not initialized!');
+        callback({ success: false, error: 'IG adapter not initialized' });
+        return;
+      }
+
+      if (!ig.connected) {
+        console.error('❌ [BACKEND] IG not connected!');
+        console.log('🔍 [BACKEND] IG object:', ig);
+        console.log('🔍 [BACKEND] IG connected property:', ig.connected);
         callback({ success: false, error: 'IG not connected - please wait for IG connection' });
         return;
       }
 
-      console.log(`[Force Trade] Placing ${data.direction} market order for ${data.epic} size ${data.size}`);
+      console.log('✅ [BACKEND] IG connection verified');
+      console.log(`🚀 [BACKEND] Placing ${data.direction} market order for ${data.epic} size ${data.size}`);
 
       // Use placeOrder for real market orders
+      console.log('📤 [BACKEND] Calling ig.placeOrder...');
       const result = await ig.placeOrder(data.epic, data.direction, data.size);
-      console.log(`[Force Trade] Order result:`, result);
+      console.log('📥 [BACKEND] IG placeOrder result:', result);
+      console.log('🔍 [BACKEND] Result type:', typeof result);
+      console.log('📊 [BACKEND] Result keys:', result ? Object.keys(result) : 'null');
 
-      callback({
-        success: true,
-        dealRefId: result.dealRefId,
-        dealId: result.dealId,
-        message: `${data.direction} market order placed successfully`
-      });
+      if (result && (result.dealRefId || result.dealId)) {
+        console.log('✅ [BACKEND] Order placed successfully!');
+        console.log('🆔 [BACKEND] Deal Reference ID:', result.dealRefId);
+        console.log('🆔 [BACKEND] Deal ID:', result.dealId);
+
+        callback({
+          success: true,
+          dealRefId: result.dealRefId,
+          dealId: result.dealId,
+          message: `${data.direction} market order placed successfully`
+        });
+      } else {
+        console.error('❌ [BACKEND] Order placement failed - no deal IDs in result');
+        callback({ success: false, error: 'Order placement failed - no deal reference returned' });
+      }
     } catch (err) {
-      console.error('[Force Trade] Order error:', err.message);
-      callback({ success: false, error: err.message });
+      console.error('💥 [BACKEND] Order placement exception:', err);
+      console.error('📝 [BACKEND] Error message:', err.message);
+
+      // Check for rate limit errors
+      if (err.response && err.response.data && err.response.data.errorCode === 'error.public-api.exceeded-account-allowance') {
+        console.error('🚫 [BACKEND] IG API rate limit exceeded!');
+        callback({
+          success: false,
+          error: 'IG Demo API rate limit exceeded. Please wait 1-2 hours for limits to reset, or switch to live account.',
+          rateLimited: true
+        });
+      } else {
+        console.error('🔍 [BACKEND] Error stack:', err.stack);
+        callback({ success: false, error: err.message });
+      }
     }
   });
 
@@ -787,29 +925,67 @@ io.on('connection', (socket) => {
   // ============ PHASE 7: Instrument Selector, Backtesting, Neural Trading ============
 
   socket.on('search_instruments', async (data, callback) => {
-    console.log('[DEBUG] Received search_instruments event:', data);
+    console.log('🔍 [BACKEND] search_instruments event received');
+    console.log('📊 [BACKEND] Search data:', data);
+    console.log('🔍 [BACKEND] Data type:', typeof data);
+    console.log('📈 [BACKEND] Data keys:', data ? Object.keys(data) : 'null');
+    console.log('🔤 [BACKEND] Search term:', data.term);
+
     try {
-      if (!ig || !ig.connected) {
-        console.log('[DEBUG] IG not connected');
+      console.log('🔗 [BACKEND] Checking IG connection for search...');
+      if (!ig) {
+        console.error('❌ [BACKEND] IG adapter not initialized!');
+        callback({ success: false, error: 'IG adapter not initialized' });
+        return;
+      }
+
+      if (!ig.connected) {
+        console.error('❌ [BACKEND] IG not connected for search!');
+        console.log('🔍 [BACKEND] IG object:', ig);
+        console.log('🔍 [BACKEND] IG connected property:', ig.connected);
         callback({ success: false, error: 'IG not connected - cannot search instruments' });
         return;
       }
 
-      console.log('[DEBUG] Calling ig.searchInstruments with term:', data.term);
-      // Search IG markets via adapter - real data only
-      const instruments = await ig.searchInstruments(data.term);
-      console.log('[DEBUG] searchInstruments returned:', instruments);
+      console.log('✅ [BACKEND] IG connection verified for search');
+      console.log('🚀 [BACKEND] Calling ig.searchInstruments with term:', data.term);
 
-      if (instruments.length > 0) {
-        console.log(`[Search] Found ${instruments.length} instruments matching "${data.term}"`);
+      // Search IG markets via adapter - real data only
+      console.log('📤 [BACKEND] Executing instrument search...');
+      const instruments = await ig.searchInstruments(data.term);
+      console.log('📥 [BACKEND] searchInstruments result:', instruments);
+      console.log('🔍 [BACKEND] Result type:', typeof instruments);
+      console.log('📊 [BACKEND] Result length:', instruments ? instruments.length : 'null');
+
+      if (instruments && instruments.length > 0) {
+        console.log(`✅ [BACKEND] Found ${instruments.length} instruments matching "${data.term}"`);
+        instruments.forEach((inst, index) => {
+          console.log(`📈 [BACKEND] Instrument ${index + 1}: ${inst.name || 'Unknown'} (${inst.epic})`);
+        });
         callback({ success: true, instruments });
       } else {
-        console.log(`[Search] No instruments found for "${data.term}"`);
+        console.log(`⚠️ [BACKEND] No instruments found for "${data.term}"`);
         callback({ success: true, instruments: [] });
       }
     } catch (err) {
-      console.error('[Search] Error:', err.message);
-      callback({ success: false, error: err.message });
+      console.error('💥 [BACKEND] Search exception:', err);
+      console.error('📝 [BACKEND] Error message:', err.message);
+
+      // Check for rate limit errors
+      if (err.response && err.response.data && err.response.data.errorCode === 'error.public-api.exceeded-account-allowance') {
+        console.error('🚫 [BACKEND] IG API rate limit exceeded!');
+        callback({
+          success: false,
+          error: 'IG Demo API rate limit exceeded. Please wait 1-2 hours for limits to reset, or switch to live account.',
+          rateLimited: true
+        });
+      } else if (err.response && err.response.status === 500) {
+        console.error('🔍 [BACKEND] IG API returned 500 - demo may not support search');
+        callback({ success: false, error: 'IG Demo API does not support market search (HTTP 500). Please use live account for search functionality.' });
+      } else {
+        console.error('🔍 [BACKEND] Error stack:', err.stack);
+        callback({ success: false, error: err.message });
+      }
     }
   });
 
@@ -1015,42 +1191,42 @@ io.on('connection', (socket) => {
     if (callback) callback({ success: true });
   });
 
-  // Test trade (SIMULATED BUY/SELL for dev testing - NOT REAL ORDERS)
+  // Test trade (REAL IG TRADES for testing)
   socket.on('test_trade', async (data, callback) => {
     try {
+      if (!ig || !ig.connected) {
+        callback({ success: false, error: 'IG not connected' });
+        return;
+      }
+
       const epic = config.current_instrument?.epic || 'CS.D.XAGUSD.CFD.IP';
       const size = 0.5; // Test size
 
-      console.log(`[Test Trade] SIMULATED ${data.direction} ${size} contracts of ${epic}`);
+      console.log(`[Test Trade] Placing REAL ${data.direction} ${size} contracts of ${epic}`);
 
-      // Simulate trade instead of placing real order
-      const simulatedTrade = {
-        dealId: `SIM_${Date.now()}`,
-        epic: epic,
-        direction: data.direction,
-        size: size,
-        level: Math.random() * 100 + 20, // Random price
-        timestamp: new Date().toISOString()
-      };
+      // Place REAL IG trade
+      const result = await ig.placeOrder(epic, data.direction, size);
+      console.log(`[Test Trade] IG order result:`, result);
 
       tradeLog.push({
         timestamp: new Date().toISOString(),
         epic: epic,
         direction: data.direction,
-        entryPrice: simulatedTrade.level || 0,
+        entryPrice: result.level || 0,
         exitPrice: 0,
         motorRate: calibrationState.baseline_motor || 0,
         pnl: 0,
         efficiency: 0,
-        dealId: simulatedTrade.dealId,
-        dealRef: simulatedTrade.dealId, // Use dealId as dealRef for simulated trades
-        type: 'simulated'
+        dealId: result.dealId,
+        dealRef: result.dealRefId,
+        type: 'test'
       });
 
       if (callback) callback({
         success: true,
-        message: `${data.direction} order simulated: ${simulatedTrade.dealId}`,
-        dealId: simulatedTrade.dealId
+        message: `${data.direction} order placed: ${result.dealRefId}`,
+        dealId: result.dealId,
+        dealRefId: result.dealRefId
       });
     } catch (err) {
       console.error('[Test Trade] Error:', err.message);

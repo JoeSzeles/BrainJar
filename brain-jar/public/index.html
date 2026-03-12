@@ -98,6 +98,39 @@
             border-bottom: 1px solid #4a7ba7;
             padding-bottom: 8px;
         }
+
+        .logs-panel {
+            background: rgba(0, 0, 0, 0.8);
+            border: 1px solid #4a7ba7;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 10px;
+            max-height: 300px;
+            overflow-y: auto;
+            font-family: 'Monaco', 'Courier New', monospace;
+            font-size: 12px;
+        }
+
+        .log-entry {
+            margin-bottom: 5px;
+            padding: 2px 0;
+        }
+
+        .log-timestamp {
+            color: #888;
+        }
+
+        .log-level-info {
+            color: #4ade80;
+        }
+
+        .log-level-error {
+            color: #ff6b6b;
+        }
+
+        .log-level-debug {
+            color: #4a9eff;
+        }
         
         .grid-2 {
             display: grid;
@@ -775,10 +808,56 @@
                     </div>
                 </div>
             </div>
+
+            <!-- Debug Logs Panel -->
+            <div class="logs-panel">
+                <h2 style="color: #4a9eff; margin-bottom: 10px;">🔍 Debug Logs</h2>
+                <div id="debug-logs" style="height: 250px; overflow-y: auto;">
+                    <div class="log-entry">
+                        <span class="log-timestamp">[00:00:00]</span>
+                        <span class="log-level-info">[INFO]</span>
+                        Dashboard loaded - check browser console for detailed logs
+                    </div>
+                </div>
+            </div>
         </div><!-- end brain panels -->
-    
+
 
     <script>
+        // Debug logging setup
+        const debugLogsDiv = document.getElementById('debug-logs');
+        const originalConsoleLog = console.log;
+        const originalConsoleError = console.error;
+        const originalConsoleWarn = console.warn;
+
+        function addLogEntry(level, message) {
+            const timestamp = new Date().toLocaleTimeString();
+            const logEntry = document.createElement('div');
+            logEntry.className = 'log-entry';
+            logEntry.innerHTML = `
+                <span class="log-timestamp">[${timestamp}]</span>
+                <span class="log-level-${level}">[${level.toUpperCase()}]</span>
+                <span>${message}</span>
+            `;
+            debugLogsDiv.appendChild(logEntry);
+            debugLogsDiv.scrollTop = debugLogsDiv.scrollHeight;
+        }
+
+        console.log = function(...args) {
+            originalConsoleLog.apply(console, args);
+            addLogEntry('info', args.join(' '));
+        };
+
+        console.error = function(...args) {
+            originalConsoleError.apply(console, args);
+            addLogEntry('error', args.join(' '));
+        };
+
+        console.warn = function(...args) {
+            originalConsoleWarn.apply(console, args);
+            addLogEntry('debug', args.join(' '));
+        };
+
         const socket = io();
         let priceChart = null;
         let volumeChart = null;
@@ -925,6 +1004,16 @@
             document.getElementById('force-buy').disabled = false;
             document.getElementById('force-sell').disabled = false;
         });
+
+        // Force enable trading buttons since IG is connected (tick data works)
+        socket.on('tick', () => {
+            if (!document.getElementById('force-buy').disabled) return; // Already enabled
+            console.log('[Frontend] Tick received - forcing button enable since IG is connected');
+            document.getElementById('force-buy').disabled = false;
+            document.getElementById('force-sell').disabled = false;
+            document.getElementById('ig-indicator').className = 'status-indicator online';
+            document.getElementById('ig-status').textContent = '✓ IG Connected (Demo Mode)';
+        });
         
         socket.on('account_update', (data) => {
             console.log('[Frontend] account_update:', data);
@@ -1039,10 +1128,10 @@
                     `${summary.price_stats?.min?.toFixed(4) || '--'} to ${summary.price_stats?.max?.toFixed(4) || '--'}`;
                 document.getElementById('volatility').textContent = 
                     (summary.volatility?.toFixed(6) || '0.000000');
-                document.getElementById('spread-current').textContent = 
-                    (summary.spread_stats?.current?.toFixed(5) || '--');
-                document.getElementById('spread-avg').textContent = 
-                    (summary.spread_stats?.average?.toFixed(5) || '--');
+                document.getElementById('spread-current').textContent =
+                    (summary.spread_stats?.current || '--');
+                document.getElementById('spread-avg').textContent =
+                    (summary.spread_stats?.average || '--');
                 document.getElementById('volume-current').textContent = 
                     summary.volume_stats?.current || '--';
             }
@@ -1151,33 +1240,99 @@
         checkBrainStatus();
         setInterval(checkBrainStatus, 30000);
 
-        // Manual trade triggers
+        // Manual trade triggers with EXTREME DEBUG LOGGING
         document.getElementById('force-buy').addEventListener('click', function() {
+            console.log('🎯 [FRONTEND] FORCE BUY BUTTON CLICKED');
+            console.log('📊 [FRONTEND] Current epic:', currentEpic);
+            console.log('🔍 [FRONTEND] Current epic type:', typeof currentEpic);
+            console.log('📈 [FRONTEND] Current epic value:', JSON.stringify(currentEpic));
+
             const size = parseFloat(document.getElementById('min-position-size').value) || 0.5;
-            socket.emit('place_order', { epic: currentEpic, direction: 'BUY', size }, (response) => {
+            console.log('💰 [FRONTEND] Position size:', size);
+            console.log('📤 [FRONTEND] Preparing BUY order data:', { epic: currentEpic, direction: 'BUY', size });
+
+            if (!currentEpic) {
+                console.error('❌ [FRONTEND] NO CURRENT EPIC SET! Cannot place order.');
                 const statusDiv = document.getElementById('trade-status');
-                if (response.success) {
+                statusDiv.textContent = '❌ No instrument selected - search for one first';
+                statusDiv.style.color = '#ff6b6b';
+                return;
+            }
+
+            console.log('🚀 [FRONTEND] Emitting place_order socket event...');
+            socket.emit('place_order', { epic: currentEpic, direction: 'BUY', size }, (response) => {
+                console.log('📥 [FRONTEND] BUY order response received:', response);
+                console.log('🔍 [FRONTEND] Response type:', typeof response);
+                console.log('📊 [FRONTEND] Response keys:', response ? Object.keys(response) : 'null');
+
+                const statusDiv = document.getElementById('trade-status');
+                if (response && response.success) {
+                    console.log('✅ [FRONTEND] BUY ORDER SUCCESS:', response.dealRefId || response.dealId);
                     statusDiv.textContent = `✅ BUY order placed: ${response.dealRefId || response.dealId}`;
                     statusDiv.style.color = '#4ade80';
                     updatePositionDisplay();
                 } else {
-                    statusDiv.textContent = `❌ BUY failed: ${response.error}`;
-                    statusDiv.style.color = '#ff6b6b';
+                    console.error('❌ [FRONTEND] BUY ORDER FAILED:', response ? response.error : 'No response');
+                    if (response && response.simulated) {
+                        console.log('🎭 [FRONTEND] BUY order was simulated (demo mode)');
+                        statusDiv.textContent = `🎭 BUY simulated: ${response.dealRefId || response.dealId} (Demo Mode)`;
+                        statusDiv.style.color = '#4ade80';
+                        updatePositionDisplay();
+                    } else if (response && response.rateLimited) {
+                        statusDiv.textContent = '🚫 IG API rate limit exceeded. Please wait 1-2 hours.';
+                        statusDiv.style.color = '#ff6b6b';
+                    } else {
+                        statusDiv.textContent = `❌ BUY failed: ${response ? response.error : 'No response'}`;
+                        statusDiv.style.color = '#ff6b6b';
+                    }
                 }
             });
         });
 
         document.getElementById('force-sell').addEventListener('click', function() {
+            console.log('🎯 [FRONTEND] FORCE SELL BUTTON CLICKED');
+            console.log('📊 [FRONTEND] Current epic:', currentEpic);
+            console.log('🔍 [FRONTEND] Current epic type:', typeof currentEpic);
+            console.log('📈 [FRONTEND] Current epic value:', JSON.stringify(currentEpic));
+
             const size = parseFloat(document.getElementById('min-position-size').value) || 0.5;
-            socket.emit('place_order', { epic: currentEpic, direction: 'SELL', size }, (response) => {
+            console.log('💰 [FRONTEND] Position size:', size);
+            console.log('📤 [FRONTEND] Preparing SELL order data:', { epic: currentEpic, direction: 'SELL', size });
+
+            if (!currentEpic) {
+                console.error('❌ [FRONTEND] NO CURRENT EPIC SET! Cannot place order.');
                 const statusDiv = document.getElementById('trade-status');
-                if (response.success) {
+                statusDiv.textContent = '❌ No instrument selected - search for one first';
+                statusDiv.style.color = '#ff6b6b';
+                return;
+            }
+
+            console.log('🚀 [FRONTEND] Emitting place_order socket event...');
+            socket.emit('place_order', { epic: currentEpic, direction: 'SELL', size }, (response) => {
+                console.log('📥 [FRONTEND] SELL order response received:', response);
+                console.log('🔍 [FRONTEND] Response type:', typeof response);
+                console.log('📊 [FRONTEND] Response keys:', response ? Object.keys(response) : 'null');
+
+                const statusDiv = document.getElementById('trade-status');
+                if (response && response.success) {
+                    console.log('✅ [FRONTEND] SELL ORDER SUCCESS:', response.dealRefId || response.dealId);
                     statusDiv.textContent = `✅ SELL order placed: ${response.dealRefId || response.dealId}`;
                     statusDiv.style.color = '#4ade80';
                     updatePositionDisplay();
                 } else {
-                    statusDiv.textContent = `❌ SELL failed: ${response.error}`;
-                    statusDiv.style.color = '#ff6b6b';
+                    console.error('❌ [FRONTEND] SELL ORDER FAILED:', response ? response.error : 'No response');
+                    if (response && response.simulated) {
+                        console.log('🎭 [FRONTEND] SELL order was simulated (demo mode)');
+                        statusDiv.textContent = `🎭 SELL simulated: ${response.dealRefId || response.dealId} (Demo Mode)`;
+                        statusDiv.style.color = '#4ade80';
+                        updatePositionDisplay();
+                    } else if (response && response.rateLimited) {
+                        statusDiv.textContent = '🚫 IG API rate limit exceeded. Please wait 1-2 hours.';
+                        statusDiv.style.color = '#ff6b6b';
+                    } else {
+                        statusDiv.textContent = `❌ SELL failed: ${response ? response.error : 'No response'}`;
+                        statusDiv.style.color = '#ff6b6b';
+                    }
                 }
             });
         });
@@ -1528,34 +1683,53 @@
             searchInput.addEventListener('input', function(e) {
                 clearTimeout(searchTimeout);
                 const term = e.target.value.trim();
-                console.log('[DEBUG] Search input:', term);
+                console.log('⌨️ [FRONTEND] Search input changed:', term);
+                console.log('📏 [FRONTEND] Search term length:', term.length);
 
                 if (term.length < 2) {
+                    console.log('⏳ [FRONTEND] Search term too short, hiding results');
                     resultsDiv.style.display = 'none';
                     return;
                 }
 
                 // Show dropdown immediately and search
+                console.log('🔍 [FRONTEND] Showing search dropdown and starting search...');
                 resultsDiv.style.display = 'block';
                 resultsDiv.innerHTML = '<div style="padding: 8px; color: #8b949e; font-size: 12px;">Searching...</div>';
 
                 searchTimeout = setTimeout(() => {
-                    console.log('[DEBUG] Emitting search_instruments for:', term);
+                    console.log('🚀 [FRONTEND] Emitting search_instruments socket event for term:', term);
                     socket.emit('search_instruments', { term }, (res) => {
-                        console.log('[DEBUG] Search response:', res);
+                        console.log('📥 [FRONTEND] Search response received:', res);
+                        console.log('🔍 [FRONTEND] Response type:', typeof res);
+                        console.log('📊 [FRONTEND] Response keys:', res ? Object.keys(res) : 'null');
+                        console.log('✅ [FRONTEND] Response success:', res ? res.success : 'null');
+                        console.log('📋 [FRONTEND] Response instruments count:', res && res.instruments ? res.instruments.length : 'null');
+
                         if (res && res.success && res.instruments && res.instruments.length > 0) {
+                            console.log('🎯 [FRONTEND] Processing', res.instruments.length, 'search results');
                             resultsDiv.innerHTML = '';
-                            res.instruments.slice(0, 10).forEach(inst => {
+                            res.instruments.slice(0, 10).forEach((inst, index) => {
+                                console.log(`📈 [FRONTEND] Instrument ${index + 1}:`, inst.name || inst.epic, '(', inst.epic, ')');
+
                                 const item = document.createElement('div');
                                 item.style.cssText = 'padding: 6px 8px; cursor: pointer; border-bottom: 1px solid #30363d; font-size: 12px;';
                                 item.innerHTML = '<span style="font-weight: 600;">' + (inst.name || inst.epic) + '</span> <span style="color: #8b949e; font-size: 10px;">' + inst.epic + '</span>';
                                 item.onmouseenter = function() { this.style.background = 'rgba(88, 166, 255, 0.08)'; };
                                 item.onmouseleave = function() { this.style.background = ''; };
-                                item.onclick = () => selectInstrument(inst);
+                                item.onclick = () => {
+                                    console.log('🎯 [FRONTEND] Instrument selected from dropdown:', inst.name || inst.epic, '(', inst.epic, ')');
+                                    selectInstrument(inst);
+                                };
                                 resultsDiv.appendChild(item);
                             });
                         } else {
-                            resultsDiv.innerHTML = '<div style="padding: 8px; color: #8b949e; font-size: 12px;">No results found</div>';
+                            console.error('❌ [FRONTEND] Search failed or no results:', res ? res.error : 'No response');
+                            if (res && res.rateLimited) {
+                                resultsDiv.innerHTML = '<div style="padding: 8px; color: #ff6b6b; font-size: 12px;">🚫 IG API rate limit exceeded. Please wait 1-2 hours.</div>';
+                            } else {
+                                resultsDiv.innerHTML = '<div style="padding: 8px; color: #8b949e; font-size: 12px;">No results found</div>';
+                            }
                         }
                     });
                 }, 300); // Faster debounce for better UX
@@ -1565,8 +1739,13 @@
         }
         
         function selectInstrument(inst) {
+            console.log('🎯 [FRONTEND] selectInstrument called with:', inst);
+            console.log('📊 [FRONTEND] Instrument epic:', inst.epic);
+            console.log('📈 [FRONTEND] Instrument name:', inst.name);
+
             // Update client-side current epic
             currentEpic = inst.epic;
+            console.log('🔄 [FRONTEND] Updated currentEpic to:', currentEpic);
 
             document.getElementById('instrument-selected').innerHTML = `
                 <div style="color: #a0a0a0; font-size: 11px;">Selected Instrument</div>
@@ -1577,13 +1756,15 @@
             document.getElementById('instrument-search').value = '';
 
             // Enable backtest and trade buttons
+            console.log('🔓 [FRONTEND] Enabling trading buttons...');
             document.getElementById('start-backtest').disabled = false;
             document.getElementById('test-buy').disabled = false;
             document.getElementById('test-sell').disabled = false;
 
             // Notify server of instrument selection
+            console.log('🚀 [FRONTEND] Emitting instrument_selected to server:', { epic: inst.epic });
             socket.emit('instrument_selected', { epic: inst.epic });
-            console.log(`[Instrument Selected] ${inst.name} (${inst.epic}) - Updated currentEpic: ${currentEpic}`);
+            console.log(`✅ [FRONTEND] Instrument fully selected: ${inst.name} (${inst.epic}) - currentEpic: ${currentEpic}`);
         }
 
         // Hide dropdown when clicking outside

@@ -323,18 +323,29 @@ class IGAdapter extends EventEmitter {
    * @param {number} limitLevel - Optional take profit level
    */
   async placeOrder(epic, direction, size, stopLevel, limitLevel) {
+    console.log('🚀 [IG-ADAPTER] placeOrder called');
+    console.log('📊 [IG-ADAPTER] Parameters:', { epic, direction, size, stopLevel, limitLevel });
+
     try {
+      console.log('🔗 [IG-ADAPTER] Checking connection...');
       if (!this.connected) {
+        console.error('❌ [IG-ADAPTER] Not connected to IG API!');
         throw new Error('Not connected to IG API');
       }
+      console.log('✅ [IG-ADAPTER] IG connection verified');
 
-      console.log(`[IG] Placing ${direction} order: ${epic} x${size}`);
+      console.log(`💰 [IG-ADAPTER] Placing ${direction} order: ${epic} x${size}`);
 
       // First get market details to determine currency (required for IG API)
+      console.log('📈 [IG-ADAPTER] Getting market details for currency code...');
       const marketDetails = await this.getMarketDetails(epic);
+      console.log('📥 [IG-ADAPTER] Market details received:', marketDetails);
       const currencyCode = marketDetails.instrument?.currencies?.[0]?.code || 'AUD';
+      console.log('💱 [IG-ADAPTER] Using currency code:', currencyCode);
 
+      console.log('🔐 [IG-ADAPTER] Getting auth headers...');
       const headers = this._getAuthHeaders();
+      console.log('✅ [IG-ADAPTER] Auth headers obtained');
 
       const payload = {
         epic,
@@ -349,25 +360,33 @@ class IGAdapter extends EventEmitter {
       if (stopLevel) payload.stopLevel = stopLevel;
       if (limitLevel) payload.limitLevel = limitLevel;
 
-      console.log(`[IG] Order payload:`, JSON.stringify(payload, null, 2));
+      console.log('📤 [IG-ADAPTER] Order payload:', JSON.stringify(payload, null, 2));
 
+      console.log('🌐 [IG-ADAPTER] Making API call to /positions/otc...');
       const response = await this.apiClient.post('/positions/otc', payload, { headers });
-
-      console.log(`[IG] Order response:`, response.data);
+      console.log('📥 [IG-ADAPTER] API response received');
+      console.log('🔍 [IG-ADAPTER] Response status:', response.status);
+      console.log('📄 [IG-ADAPTER] Order response data:', response.data);
 
       if (!response.data || !response.data.dealReference) {
+        console.error('❌ [IG-ADAPTER] Invalid response - no dealReference!');
+        console.error('🔍 [IG-ADAPTER] Response data:', JSON.stringify(response.data));
         throw new Error(`Invalid response: ${JSON.stringify(response.data)}`);
       }
 
       const dealRefId = response.data.dealReference;
+      console.log('🆔 [IG-ADAPTER] Deal Reference ID:', dealRefId);
 
       // Wait a moment then check deal status
+      console.log('⏳ [IG-ADAPTER] Waiting 1 second for deal confirmation...');
       await new Promise(resolve => setTimeout(resolve, 1000));
 
+      console.log('🔍 [IG-ADAPTER] Getting deal confirmation...');
       const confirmation = await this.getDealConfirmation(dealRefId);
-      console.log(`[IG] Deal confirmation:`, confirmation);
+      console.log('📋 [IG-ADAPTER] Deal confirmation:', confirmation);
 
       // Record trade
+      console.log('📝 [IG-ADAPTER] Recording trade...');
       const trade = {
         timestamp: new Date(),
         epic,
@@ -383,16 +402,23 @@ class IGAdapter extends EventEmitter {
         profit: confirmation.profit || 0
       };
 
+      console.log('📊 [IG-ADAPTER] Trade record:', trade);
       this.tradeHistory.push(trade);
+      console.log('📈 [IG-ADAPTER] Trade added to history, emitting trade event...');
       this.emit('trade', trade);
 
-      console.log(`[IG] ✅ Order placed successfully: ${dealRefId} (${confirmation.dealStatus})`);
+      console.log(`✅ [IG-ADAPTER] Order placed successfully: ${dealRefId} (${confirmation.dealStatus})`);
+      console.log('🎯 [IG-ADAPTER] Returning trade object');
       return trade;
     } catch (err) {
-      console.error('[IG] ❌ placeOrder error:', err.message);
+      console.error('💥 [IG-ADAPTER] placeOrder exception:', err);
+      console.error('📝 [IG-ADAPTER] Error message:', err.message);
       if (err.response?.data) {
-        console.error('[IG] Error details:', JSON.stringify(err.response.data, null, 2));
+        console.error('🔍 [IG-ADAPTER] HTTP response data:', JSON.stringify(err.response.data, null, 2));
+        console.error('📊 [IG-ADAPTER] HTTP status:', err.response.status);
       }
+      console.error('🔍 [IG-ADAPTER] Error stack:', err.stack);
+      console.log('📢 [IG-ADAPTER] Emitting trade_error event...');
       this.emit('trade_error', { epic, direction, size, error: err.message });
       throw err;
     }
@@ -725,55 +751,72 @@ class IGAdapter extends EventEmitter {
    * @returns {Promise<Array>} Array of matched instruments
    */
   async searchInstruments(term) {
+    console.log('🔍 [IG-ADAPTER] searchInstruments called with term:', term);
+    console.log('📏 [IG-ADAPTER] Term length:', term ? term.length : 'null');
+
     try {
       if (!term || term.length < 2) {
-        console.log(`[IG SEARCH] Term "${term}" too short, minimum 2 chars`);
+        console.log(`⚠️ [IG-ADAPTER] Term "${term}" too short, minimum 2 chars`);
         return [];
       }
 
-      console.log(`[IG SEARCH] Searching for "${term}"...`);
+      console.log('🔗 [IG-ADAPTER] Checking authentication...');
       const headers = this._getAuthHeaders();
+      console.log('✅ [IG-ADAPTER] Auth headers obtained');
+
+      console.log(`🚀 [IG-ADAPTER] Making API call to /markets with searchTerm: "${term}"`);
       const response = await this.apiClient.get('/markets', {
         params: { searchTerm: term },
         headers
       });
 
-      console.log(`[IG SEARCH RAW for "${term}"]`, JSON.stringify(response.data, null, 2));
+      console.log('📥 [IG-ADAPTER] API response received');
+      console.log('🔍 [IG-ADAPTER] Response status:', response.status);
+      console.log('📊 [IG-ADAPTER] Response data keys:', response.data ? Object.keys(response.data) : 'null');
+      console.log(`📄 [IG-ADAPTER] RAW response for "${term}":`, JSON.stringify(response.data, null, 2));
 
       if (!response.data) {
-        console.warn(`[IG SEARCH] Empty response from markets search for "${term}"`);
+        console.warn(`❌ [IG-ADAPTER] Empty response from markets search for "${term}"`);
         return [];
       }
 
       // API returns markets array
       const results = response.data.markets || response.data.instrumentList || [];
-
-      console.log(`[IG SEARCH] Found ${results.length} results for "${term}"`);
+      console.log(`📊 [IG-ADAPTER] Results array length: ${results.length}`);
 
       if (results.length === 0) {
-        console.log(`[IG SEARCH] No instruments found for term: "${term}"`);
+        console.log(`⚠️ [IG-ADAPTER] No instruments found for term: "${term}"`);
         return [];
       }
 
+      console.log('🔄 [IG-ADAPTER] Mapping IG response to standardized format...');
       // Map IG response to standardized format
-      const instruments = results.map(inst => ({
-        epic: inst.epic || inst.instrumentName,
-        name: inst.instrumentName || inst.name || 'Unknown',
-        bid: parseFloat(inst.bid || 0),
-        ask: parseFloat(inst.offer || 0),
-        type: inst.type || inst.instrumentType || 'UNKNOWN',
-        id: inst.epic || inst.instrumentName
-      }));
+      const instruments = results.map((inst, index) => {
+        const mapped = {
+          epic: inst.epic || inst.instrumentName,
+          name: inst.instrumentName || inst.name || 'Unknown',
+          bid: parseFloat(inst.bid || 0),
+          ask: parseFloat(inst.offer || 0),
+          type: inst.type || inst.instrumentType || 'UNKNOWN',
+          id: inst.epic || inst.instrumentName
+        };
+        console.log(`📈 [IG-ADAPTER] Instrument ${index + 1}: ${mapped.name} (${mapped.epic}) - Bid: ${mapped.bid}, Ask: ${mapped.ask}`);
+        return mapped;
+      });
 
-      console.log(`[IG SEARCH] Mapped ${instruments.length} instruments:`, instruments.map(i => `${i.name} (${i.epic})`));
+      console.log(`✅ [IG-ADAPTER] Successfully mapped ${instruments.length} instruments for "${term}"`);
+      console.log('📋 [IG-ADAPTER] Final instruments list:', instruments.map(i => `${i.name} (${i.epic})`));
 
       return instruments;
     } catch (err) {
-      console.error('[IG SEARCH] searchInstruments error:', err.message);
+      console.error('💥 [IG-ADAPTER] searchInstruments exception:', err);
+      console.error('📝 [IG-ADAPTER] Error message:', err.message);
       if (err.response) {
-        console.error('[IG SEARCH] Status:', err.response.status);
-        console.error('[IG SEARCH] Data:', err.response.data);
+        console.error('🔍 [IG-ADAPTER] HTTP Status:', err.response.status);
+        console.error('📄 [IG-ADAPTER] Response data:', err.response.data);
+        console.error('📋 [IG-ADAPTER] Response headers:', err.response.headers);
       }
+      console.error('🔍 [IG-ADAPTER] Error stack:', err.stack);
       throw err;  // Throw instead of returning empty array
     }
   }

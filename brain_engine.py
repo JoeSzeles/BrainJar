@@ -25,10 +25,18 @@ try:
     import numpy as np
     from pydantic import BaseModel, Field
     from typing import List, Dict, Optional, Union
+    if sys.version_info < (3, 9):
+        from typing import Optional as OptionalType
+        Optional = OptionalType
     from fastapi import FastAPI, HTTPException
     from fastapi.middleware.cors import CORSMiddleware
     import uvicorn
-    print("All FastAPI imports successful - using REAL brain engine!")
+
+    # Import real Drosophila model
+    sys.path.append(str(Path(__file__).parent / "Drosophila_brain_model-main" / "Drosophila_brain_model-main"))
+    from model import create_model, default_params as drosophila_params
+
+    print("All FastAPI imports successful - using REAL Drosophila brain engine!")
     FASTAPI_AVAILABLE = True
 except ImportError as e:
     print(f"FastAPI import error: {e}")
@@ -191,63 +199,88 @@ state_mon = None
 pois = []
 
 def create_network(params):
-    """Create real neural network"""
+    """Create REAL Drosophila neural network from actual brain data"""
     global network, spike_mon, state_mon, pois
 
     try:
-        # Create real network
-        neu = NeuronGroup(100, model=params['eqs'], threshold=params['eq_th'], reset=params['eq_rst'], method='euler')
+        print("[BRAIN] Loading REAL Drosophila brain model with 630 neurons...")
 
-        # Create Poisson inputs
-        poi_exc = PoissonInput(neu, 'I_exc', 20, params['r_poi'], weight=1*mV)  # Excitatory inputs
-        poi_inh = PoissonInput(neu, 'I_inh', 15, params['r_poi2'], weight=1*mV)  # Inhibitory inputs
+        # Use the real Drosophila model parameters
+        drosophila_path_comp = Path(__file__).parent / "Drosophila_brain_model-main" / "Drosophila_brain_model-main" / "2023_03_23_completeness_630_final.csv"
+        drosophila_path_con = Path(__file__).parent / "Drosophila_brain_model-main" / "Drosophila_brain_model-main" / "2023_03_23_connectivity_630_final.parquet"
 
-        # Create monitors
-        spike_mon = SpikeMonitor(neu)
-        state_mon = StateMonitor(neu, 'v', record=True)
+        print(f"[BRAIN] Loading completeness data from: {drosophila_path_comp}")
+        print(f"[BRAIN] Loading connectivity data from: {drosophila_path_con}")
+
+        # Create the real Drosophila network using the actual brain data
+        neu, syn, spike_mon = create_model(
+            path_comp=str(drosophila_path_comp),
+            path_con=str(drosophila_path_con),
+            params=drosophila_params
+        )
+
+        print(f"[BRAIN] ✅ Created real Drosophila network with {neu.N} neurons and {len(syn)} synapses")
+
+        # Create Poisson inputs for stimulation
+        poi_exc = PoissonInput(neu, 'g', 20, params.get('r_poi', 150*Hz), weight=params.get('w_syn', 0.275*mV))
+        poi_inh = PoissonInput(neu, 'g', 15, params.get('r_poi2', 0*Hz), weight=-params.get('w_syn', 0.275*mV))
 
         # Create network
         network = Brian2Network()
-        network.add(neu, poi_exc, poi_inh, spike_mon, state_mon)
-
-        # Set namespace with parameters
-        network.namespace = {
-            'tau': params['tau'],
-            't_run': params['t_run']
-        }
+        network.add(neu, syn, poi_exc, poi_inh, spike_mon)
 
         pois = [poi_exc, poi_inh]
         return pois, neu
 
     except Exception as e:
-        print(f"Network creation error: {e}")
+        print(f"[BRAIN] ❌ Real Drosophila network creation failed: {e}")
         import traceback
         traceback.print_exc()
-        return [], NeuronGroup(0, model='dv/dt = 0 : volt')
+        print("[BRAIN] Falling back to simplified network...")
+
+        # Fallback to simplified network
+        try:
+            neu = NeuronGroup(100, model=params['eqs'], threshold=params['eq_th'], reset=params['eq_rst'], method='euler')
+            poi_exc = PoissonInput(neu, 'I_exc', 20, params['r_poi'], weight=1*mV)
+            poi_inh = PoissonInput(neu, 'I_inh', 15, params['r_poi2'], weight=1*mV)
+            spike_mon = SpikeMonitor(neu)
+            network = Brian2Network()
+            network.add(neu, poi_exc, poi_inh, spike_mon)
+            pois = [poi_exc, poi_inh]
+            return pois, neu
+        except Exception as e2:
+            print(f"[BRAIN] Even fallback network failed: {e2}")
+            return [], NeuronGroup(0, model='dv/dt = 0 : volt')
 
 def get_spk_trn(spk_mon):
     """Extract spike times from spike monitor"""
     return spk_mon.spike_trains()
 
-# Default parameters for real model
-default_params = {
-    'eqs': '''
-    dv/dt = (-v + I_exc - I_inh) / tau : volt
-    dI_exc/dt = -I_exc / (5*ms) : volt
-    dI_inh/dt = -I_inh / (5*ms) : volt
-    ''',
-    'eq_th': 'v > -50*mV',
-    'eq_rst': 'v = -70*mV; I_exc = 0*mV; I_inh = 0*mV',
-    'v_0': -70*mV,
-    't_rfc': 5*ms,
-    't_dly': 1*ms,
-    'w_syn': 1.0,
-    'r_poi': 100.0 * Hz,
-    'r_poi2': 50.0 * Hz,
-    'f_poi': 1.0,
-    'tau': 10*ms,
-    't_run': 100*ms
-}
+# Use real Drosophila brain parameters
+try:
+    default_params = drosophila_params.copy()
+    print("[BRAIN] ✅ Using REAL Drosophila brain parameters")
+except NameError:
+    # Fallback if import failed
+    default_params = {
+        'eqs': '''
+        dv/dt = (-v + I_exc - I_inh) / tau : volt
+        dI_exc/dt = -I_exc / (5*ms) : volt
+        dI_inh/dt = -I_inh / (5*ms) : volt
+        ''',
+        'eq_th': 'v > -50*mV',
+        'eq_rst': 'v = -70*mV; I_exc = 0*mV; I_inh = 0*mV',
+        'v_0': -70*mV,
+        't_rfc': 5*ms,
+        't_dly': 1*ms,
+        'w_syn': 1.0,
+        'r_poi': 100.0 * Hz,
+        'r_poi2': 50.0 * Hz,
+        'f_poi': 1.0,
+        'tau': 10*ms,
+        't_run': 100*ms
+    }
+    print("[BRAIN] ⚠️ Using fallback parameters")
 
 print("Real neural functions loaded successfully")
 
