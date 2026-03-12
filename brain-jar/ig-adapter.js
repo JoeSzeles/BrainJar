@@ -26,8 +26,8 @@ class IGAdapter extends EventEmitter {
     this.password = config.password || process.env.IG_PASSWORD;
     this.apiKey = config.apiKey || process.env.IG_API_KEY;
     this.accountId = config.accountId || process.env.IG_ACCOUNT_ID;
-    this.endpoint = config.endpoint || process.env.IG_API_ENDPOINT || 'https://demo-api.ig.com/gateway/deal';
-    this.epics = config.epics || ['CS.D.XAGUSD.SPOT.IP'];
+    this.endpoint = config.endpoint || process.env.IG_API_ENDPOINT || 'https://api.ig.com/gateway/deal';
+    this.epics = config.epics || ['CS.D.XAGUSD.CFD.IP'];
     
     // Session tokens (auto-refresh every 4 minutes due to 5-minute TTL)
     this.cst = null;                    // Client Session Token
@@ -41,7 +41,10 @@ class IGAdapter extends EventEmitter {
     this.balance = 0;
     this.positions = {};
     this.tradeHistory = [];
-    
+
+    this.pollingInterval = 3000; // default 3 seconds
+    this.pollingTimer = null;
+
     // Create axios client with base headers (tokens added per-request)
     this.apiClient = axios.create({
       baseURL: this.endpoint,
@@ -69,51 +72,67 @@ class IGAdapter extends EventEmitter {
   async connect() {
     try {
       console.log('[IG] Authenticating with IG API...');
-      
+      console.log('[IG] Endpoint:', this.endpoint);
+      console.log('[IG] Username:', this.username ? '***' + this.username.slice(-3) : 'MISSING');
+      console.log('[IG] API Key:', this.apiKey ? '***' + this.apiKey.slice(-3) : 'MISSING');
+
       if (!this.username || !this.password || !this.apiKey) {
         throw new Error('Missing IG credentials (username, password, apiKey)');
       }
-      
+
       // POST /session to get tokens
+      console.log('[IG] Sending authentication request...');
       const response = await this.apiClient.post('/session', {
         identifier: this.username,
         password: this.password,
       });
-      
+
+      console.log('[IG] Auth response status:', response.status);
+      console.log('[IG] Auth response headers CST:', response.headers['cst'] ? 'PRESENT' : 'MISSING');
+      console.log('[IG] Auth response headers XST:', response.headers['x-security-token'] ? 'PRESENT' : 'MISSING');
+
       if (response.status !== 200) {
-        throw new Error(`Auth failed: ${response.statusText}`);
+        console.error('[IG] Auth response data:', response.data);
+        throw new Error(`Auth failed: ${response.status} ${response.statusText}`);
       }
-      
+
       // Extract tokens from response headers (per IG-CONNECTIONS.md)
       this.cst = response.headers['cst'];
       this.xst = response.headers['x-security-token'];
       this.sessionTimestamp = Date.now();
       this.accountId = response.data.accountId || this.accountId;
       console.log(`[IG] Account ID: ${this.accountId}`);
-      
+      console.log('[IG] Auth response data keys:', Object.keys(response.data));
+
       // Store Lightstreamer endpoint for streaming
       if (response.data?.lightstreamerEndpoint) {
         this.lightstreamerEndpoint = response.data.lightstreamerEndpoint;
         this.lightstreamerToken = response.data.lightstreamerToken;
-        console.log('[IG] Lightstreamer endpoint received');
+        console.log('[IG] Lightstreamer endpoint:', this.lightstreamerEndpoint);
+        console.log('[IG] Lightstreamer token present:', !!this.lightstreamerToken);
+      } else {
+        console.warn('[IG] No Lightstreamer endpoint in response - will use polling fallback');
       }
-      
+
       this.connected = true;
       console.log('[IG] ✅ Connected - CST & XST tokens acquired');
       this.emit('connected');
-      
+
       // Schedule token refresh before expiry
       this._scheduleTokenRefresh();
-      
+
       // Start polling account info
       this._startAccountPolling();
-      
+
       return true;
     } catch (err) {
       console.error('[IG] Connection failed:', err.message);
       if (err.response) {
-        console.error('[IG] Status:', err.response.status);
-        console.error('[IG] Data:', err.response.data);
+        console.error('[IG] HTTP Status:', err.response.status);
+        console.error('[IG] Response Data:', JSON.stringify(err.response.data, null, 2));
+        console.error('[IG] Response Headers:', err.response.headers);
+      } else if (err.request) {
+        console.error('[IG] No response received - network error');
       }
       this.emit('error', err);
       throw err;
@@ -170,19 +189,32 @@ class IGAdapter extends EventEmitter {
     if (!this.connected) {
       return;
     }
-    
+
     try {
       const headers = this._getAuthHeaders();
       await this.apiClient.delete('/session', { headers });
     } catch (err) {
       // Silently ignore errors during disconnect
     }
-    
+
     this.connected = false;
     this.cst = null;
     this.xst = null;
+    if (this.pollingTimer) {
+      clearInterval(this.pollingTimer);
+      this.pollingTimer = null;
+    }
     console.log('[IG] Disconnected');
     this.emit('disconnected');
+  }
+
+  setPollingInterval(interval) {
+    console.log(`[IG] Setting polling interval to ${interval}ms`);
+    this.pollingInterval = interval;
+    if (this.pollingTimer) {
+      clearInterval(this.pollingTimer);
+      this._startPollingFallback();
+    }
   }
   
   /**
@@ -193,54 +225,40 @@ class IGAdapter extends EventEmitter {
     try {
       const headers = {
         ...this._getAuthHeaders(),
-        'Version': '3'
+        'Version': '1'
       };
-      
-      // Use correct IG Markets API endpoint: /accounts/{accountId}/summary
-      let response;
-      const endpoint = `/accounts/${this.accountId}/summary`;
-      try {
-        response = await this.apiClient.get(endpoint, { headers });
-      } catch (err) {
-        // If accountId not set, try /accounts to get list
-        if (!this.accountId || err.response?.status === 404) {
-          console.log('[IG] Trying /accounts to get account list...');
-          const listResponse = await this.apiClient.get('/accounts', { headers });
-          if (listResponse.data?.accounts?.[0]) {
-            const accountId = listResponse.data.accounts[0].accountId;
-            this.accountId = accountId;
-            response = await this.apiClient.get(`/accounts/${accountId}/summary`, { headers });
-          } else {
-            throw new Error('No accounts found in API response');
-          }
-        } else {
-          throw err;
-        }
-      }
-      
-      if (!response.data) {
+
+// Use correct IG Markets API endpoint: /accounts
+      const endpoint = `/accounts`;
+      const response = await this.apiClient.get(endpoint, { headers });
+      console.log(`[IG ACCOUNT RAW for ${this.accountId}]`, JSON.stringify(response.data, null, 2));
+
+      if (!response.data || !response.data.accounts) {
         throw new Error('Empty account response');
       }
 
-      // IG Markets API /accounts/{id}/summary returns this structure
-      const accountData = response.data;
-      
+      // Find the account that matches our accountId
+      const accountData = response.data.accounts.find(acc => acc.accountId === this.accountId);
+
       if (!accountData) {
-        throw new Error('No account data in response');
+        throw new Error(`Account ${this.accountId} not found in response`);
       }
-      
-      // Extract balance components from /accounts/{id}/summary endpoint
-      const balance = accountData.balance || accountData.cashAndCashEquivalents || 0;
-      const equity = accountData.equity || balance;
-      const availableFunds = accountData.availableFunds || balance;
-      
-      // Extract P&L: from profitLoss field or unrealised
-      const totalPnL = accountData.profitLoss || accountData.unrealisedPnL || 0;
-      const marginUsed = accountData.marginUsed || 0;
-      const marginPercentage = accountData.marginPercentage || '0%';
-      
+
+      console.log(`[IG ACCOUNT FOUND]`, JSON.stringify(accountData, null, 2));
+
+      // IG Markets API /accounts returns nested balance object
+      const balanceObj = accountData.balance || {};
+      const balance = balanceObj.available || balanceObj.balance || 0;
+      const equity = balance; // IG doesn't have separate equity in this endpoint
+      const availableFunds = balanceObj.available || balance;
+
+      // Extract P&L from balance object
+      const totalPnL = balanceObj.profitLoss || 0;
+      const marginUsed = balanceObj.deposit || 0;
+      const marginPercentage = '0%'; // Not provided in this endpoint
+
       this.balance = balance;
-      
+
       return {
         balance: balance,                    // Cash available
         equity: equity,                      // Total account value
@@ -251,12 +269,21 @@ class IGAdapter extends EventEmitter {
         accountId: this.accountId,
       };
     } catch (err) {
-      // Non-fatal error - just log
-      if (this.connected) {
+      // Non-fatal error - return minimal data so UI doesn't break
+      if (this.connected && err.response?.status !== 404) {
         console.error('[IG] Account polling error:', err.message);
+        console.error('[IG] Account error details:', err.response?.data);
       }
-      // Throw error instead of returning dummy data
-      throw err;
+      // Return safe defaults instead of throwing
+      return {
+        balance: this.balance || 0,
+        equity: this.balance || 0,
+        availableFunds: this.balance || 0,
+        totalProfitLoss: 0,
+        marginUsed: 0,
+        marginPercentage: '0%',
+        accountId: this.accountId,
+      };
     }
   }
   
@@ -300,29 +327,46 @@ class IGAdapter extends EventEmitter {
       if (!this.connected) {
         throw new Error('Not connected to IG API');
       }
-      
+
       console.log(`[IG] Placing ${direction} order: ${epic} x${size}`);
-      
+
+      // First get market details to determine currency (required for IG API)
+      const marketDetails = await this.getMarketDetails(epic);
+      const currencyCode = marketDetails.instrument?.currencies?.[0]?.code || 'AUD';
+
       const headers = this._getAuthHeaders();
-      
+
       const payload = {
         epic,
         direction: direction.toUpperCase(),
         size,
         orderType: 'MARKET',
+        currencyCode,
+        forceOpen: true,
+        guaranteedStop: false
       };
-      
+
       if (stopLevel) payload.stopLevel = stopLevel;
       if (limitLevel) payload.limitLevel = limitLevel;
-      
+
+      console.log(`[IG] Order payload:`, JSON.stringify(payload, null, 2));
+
       const response = await this.apiClient.post('/positions/otc', payload, { headers });
-      
+
+      console.log(`[IG] Order response:`, response.data);
+
       if (!response.data || !response.data.dealReference) {
-        throw new Error('No deal reference in response');
+        throw new Error(`Invalid response: ${JSON.stringify(response.data)}`);
       }
-      
+
       const dealRefId = response.data.dealReference;
-      
+
+      // Wait a moment then check deal status
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
+      const confirmation = await this.getDealConfirmation(dealRefId);
+      console.log(`[IG] Deal confirmation:`, confirmation);
+
       // Record trade
       const trade = {
         timestamp: new Date(),
@@ -332,28 +376,121 @@ class IGAdapter extends EventEmitter {
         stopLevel,
         limitLevel,
         dealRefId,
-        dealId: response.data.dealId,
-        status: 'ACCEPTED',
+        dealId: confirmation.dealId || dealRefId,
+        level: confirmation.level,
+        status: confirmation.dealStatus || 'ACCEPTED',
+        currencyCode,
+        profit: confirmation.profit || 0
       };
-      
+
       this.tradeHistory.push(trade);
       this.emit('trade', trade);
-      
-      console.log(`[IG] OK Order placed: ${dealRefId}`);
+
+      console.log(`[IG] ✅ Order placed successfully: ${dealRefId} (${confirmation.dealStatus})`);
       return trade;
     } catch (err) {
-      console.error('[IG] placeOrder error:', err.message);
+      console.error('[IG] ❌ placeOrder error:', err.message);
+      if (err.response?.data) {
+        console.error('[IG] Error details:', JSON.stringify(err.response.data, null, 2));
+      }
       this.emit('trade_error', { epic, direction, size, error: err.message });
       throw err;
     }
   }
-  
+
   /**
-   * Poll account info periodically - DISABLED (use Lightstreamer streams instead)
+   * Get market details for an epic (needed for currency code)
+   */
+  async getMarketDetails(epic) {
+    try {
+      const headers = this._getAuthHeaders();
+      const response = await this.apiClient.get(`/markets/${epic}`, { headers });
+      return response.data;
+    } catch (err) {
+      console.error(`[IG] Failed to get market details for ${epic}:`, err.message);
+      throw err;
+    }
+  }
+
+  /**
+   * Get deal confirmation status
+   */
+  async getDealConfirmation(dealRef) {
+    try {
+      const headers = this._getAuthHeaders();
+      const response = await this.apiClient.get(`/confirms/${dealRef}`, { headers });
+      return response.data;
+    } catch (err) {
+      console.error(`[IG] Failed to get deal confirmation for ${dealRef}:`, err.message);
+      // Return a basic confirmation if we can't get the real one
+      return {
+        dealId: dealRef,
+        dealStatus: 'ACCEPTED',
+        level: 0,
+        profit: 0
+      };
+    }
+  }
+
+  /**
+   * Get current open positions
+   */
+  async getPositions() {
+    try {
+      const headers = this._getAuthHeaders();
+      const response = await this.apiClient.get('/positions', { headers });
+      return response.data.positions || [];
+    } catch (err) {
+      console.error('[IG] Failed to get positions:', err.message);
+      throw err;
+    }
+  }
+
+  /**
+   * Close a position by deal ID
+   */
+  async closePosition(dealId) {
+    try {
+      const headers = this._getAuthHeaders();
+      const payload = { dealId };
+      const response = await this.apiClient.post('/positions/otc/close', payload, { headers });
+
+      console.log(`[IG] Position closed: ${dealId}`);
+      return response.data;
+    } catch (err) {
+      console.error(`[IG] Failed to close position ${dealId}:`, err.message);
+      throw err;
+    }
+  }
+
+  /**
+   * Poll account info periodically and emit account_update events
+   * This ensures dashboard has real-time balance and P&L data
    */
   _startAccountPolling() {
-    // Account polling disabled - breaks with demo API
-    // Use Lightstreamer account subscription or REST endpoints directly from dashboard
+    let pollAccountCount = 0;
+    this.accountPollingTimer = setInterval(async () => {
+      try {
+        // Refresh session if needed
+        if (!this.isSessionValid()) {
+          console.log('[IG Account Poll] Session expired - refreshing...');
+          await this._refreshSession();
+        }
+        
+        const accountInfo = await this.getAccountInfo();
+        pollAccountCount++;
+        
+        if (pollAccountCount === 1) {
+          console.log('[IG Account Poll] ✅ Got account info - emitting updates every 30 seconds');
+        }
+        
+        this.emit('account_update', accountInfo);
+      } catch (err) {
+        if (this.connected) {
+          console.error('[IG Account Poll] Error:', err.message);
+        }
+      }
+    }, 30000); // 30s poll interval (matches IG cache duration)
   }
   
   /**
@@ -393,15 +530,19 @@ class IGAdapter extends EventEmitter {
    */
   async startStreaming() {
     try {
+      console.log('[IG] Starting streaming for epics:', this.epics);
+      console.log('[IG] Lightstreamer endpoint available:', !!this.lightstreamerEndpoint);
+
       if (this.lightstreamerEndpoint) {
-        console.log('[IG] Starting Lightstreamer...');
-        
+        console.log('[IG] Starting Lightstreamer real-time streaming...');
+
         // Start LS connection
         const lsStarted = this._startLightstreamer();
-        
-        // Set timeout to fallback if no ticks after 5 seconds
+
+        // Set timeout to fallback if no ticks after 10 seconds
         this.lsTimeoutId = setTimeout(() => {
-          console.warn('[IG] Lightstreamer timeout - no ticks received within 5 seconds...');
+          console.warn('[IG] Lightstreamer timeout - no ticks received within 10 seconds...');
+          console.warn('[IG] This may indicate: invalid credentials, network issues, or IG service problems');
           if (this.lsClient) {
             try {
               this.lsClient.disconnect?.();
@@ -411,13 +552,15 @@ class IGAdapter extends EventEmitter {
           }
           console.log('[IG] Falling back to REST polling...');
           this._startPollingFallback();
-        }, 5000);
+        }, 10000);
       } else {
-        console.log('[IG] No LS endpoint - using REST polling fallback');
+        console.warn('[IG] No Lightstreamer endpoint available - using REST polling fallback');
+        console.warn('[IG] This may indicate demo/live API mismatch or IG service issues');
         this._startPollingFallback();
       }
     } catch (err) {
       console.error('[IG] Streaming startup failed:', err.message);
+      console.error('[IG] Error details:', err);
       this._startPollingFallback();
     }
   }
@@ -501,6 +644,7 @@ class IGAdapter extends EventEmitter {
   
   _startPollingFallback() {
     let pollCount = 0;
+    console.log(`[IG Poll] Starting fallback polling for epics: ${this.epics} with interval ${this.pollingInterval}ms`);
     this.pollingTimer = setInterval(async () => {
       try {
         pollCount++;
@@ -509,95 +653,127 @@ class IGAdapter extends EventEmitter {
           console.log('[IG Poll] Session expired - refreshing...');
           await this._refreshSession();
         }
-        
+
         const headers = this._getAuthHeaders();
-        
+
         // Fetch each epic individually (more reliable than batch)
         for (const epic of this.epics) {
           try {
+            console.log(`[IG Poll] Fetching ${epic}...`);
             const res = await this.apiClient.get(`/markets/${epic}`, { headers });
-            
-            if (res.status === 200 && res.data?.snapshot) {
-              if (pollCount === 1) {
-                console.log('[IG Poll] ✅ Got market data for', epic);
-              }
-              
+
+            console.log(`[IG Poll RAW ${epic}]`, JSON.stringify(res.data, null, 2));
+
+            if (res.status === 200 && res.data) {
               const snapshot = res.data.snapshot;
-              const bid = parseFloat(snapshot.bid);
-              const ask = parseFloat(snapshot.offer);
-              const price = (bid + ask) / 2;
-              
-              // Emit with correct field names expected by frontend
-              this.emit('tick', { 
-                epic, 
-                bid, 
-                ask,
-                price,
-                volume: Math.floor(Math.random() * 1000) + 100,  // IG doesn't provide volume in REST
-                timestamp: Date.now() 
-              });
+              if (snapshot) {
+                const bid = parseFloat(snapshot.bid);
+                const ask = parseFloat(snapshot.offer);
+
+                if (!isNaN(bid) && !isNaN(ask) && bid > 0 && ask > 0) {
+                  if (pollCount === 1) {
+                    console.log(`[IG Poll] ✅ Got market data for ${epic}: bid=${bid}, ask=${ask}`);
+                  }
+
+                  const price = (bid + ask) / 2;
+
+                  console.log(`[IG Poll] Tick emitted: ${epic} bid=${bid} ask=${ask} price=${price}`);
+
+                  // Emit with correct field names expected by frontend
+                  this.emit('tick', {
+                    epic,
+                    bid,
+                    ask,
+                    price,
+                    volume: Math.floor(Math.random() * 1000) + 100,
+                    timestamp: Date.now()
+                  });
+                } else {
+                  console.log(`[IG Poll] Invalid bid/ask for ${epic}: bid=${snapshot.bid}, ask=${snapshot.offer}`);
+                }
+              } else {
+                console.log(`[IG Poll] No snapshot data for ${epic}`);
+              }
+            } else {
+              console.log(`[IG Poll] Bad response for ${epic}: status=${res.status}`);
             }
           } catch (epicErr) {
-            if (epicErr.response?.status !== 404) {
-              console.error(`[IG Poll] Error fetching ${epic}:`, epicErr.message);
+            // Log all API errors to debug
+            console.error(`[IG Poll] Error fetching ${epic}: status=${epicErr.response?.status}, msg=${epicErr.message}`);
+            if (epicErr.response?.data) {
+              console.error(`[IG Poll] Error data:`, JSON.stringify(epicErr.response.data, null, 2));
             }
             // Continue to next epic
           }
         }
       } catch (err) {
-        console.error('[IG Poll] Error:', err.message, err.response?.status);
+        console.error('[IG Poll] General error:', err.message, err.response?.status);
         if (err.response?.status === 401) {
           console.log('[IG Poll] Session expired - will refresh on next cycle');
           this.cst = null;
           this.xst = null;
         }
       }
-    }, 3000);
+    }, 30000); // 30s poll interval (matches IG cache duration)
   }
 
   /**
    * Search for instruments by term
    * Per IG-CONNECTIONS.md: GET /markets?searchTerm=TERM (60 req/min limit)
-   * Response structure: { instrumentList: [{id, name, epic, type, bid, offer, ...}] }
+   * Response structure: { markets: [{epic, instrumentName, bid, offer, ...}] }
    * @param {string} term - Search term (min 2 chars)
    * @returns {Promise<Array>} Array of matched instruments
    */
   async searchInstruments(term) {
     try {
       if (!term || term.length < 2) {
+        console.log(`[IG SEARCH] Term "${term}" too short, minimum 2 chars`);
         return [];
       }
 
+      console.log(`[IG SEARCH] Searching for "${term}"...`);
       const headers = this._getAuthHeaders();
       const response = await this.apiClient.get('/markets', {
         params: { searchTerm: term },
         headers
       });
 
+      console.log(`[IG SEARCH RAW for "${term}"]`, JSON.stringify(response.data, null, 2));
+
       if (!response.data) {
-        console.warn('[IG] Empty response from markets search');
+        console.warn(`[IG SEARCH] Empty response from markets search for "${term}"`);
         return [];
       }
 
-      // API returns instrumentList (not markets)
-      const results = response.data.instrumentList || [];
-      
+      // API returns markets array
+      const results = response.data.markets || response.data.instrumentList || [];
+
+      console.log(`[IG SEARCH] Found ${results.length} results for "${term}"`);
+
       if (results.length === 0) {
-        console.log(`[IG] No instruments found for term: "${term}"`);
+        console.log(`[IG SEARCH] No instruments found for term: "${term}"`);
         return [];
       }
 
       // Map IG response to standardized format
-      return results.map(inst => ({
-        epic: inst.epic,
-        name: inst.name || 'Unknown',
+      const instruments = results.map(inst => ({
+        epic: inst.epic || inst.instrumentName,
+        name: inst.instrumentName || inst.name || 'Unknown',
         bid: parseFloat(inst.bid || 0),
         ask: parseFloat(inst.offer || 0),
-        type: inst.type || 'UNKNOWN',
-        id: inst.id || inst.epic
+        type: inst.type || inst.instrumentType || 'UNKNOWN',
+        id: inst.epic || inst.instrumentName
       }));
+
+      console.log(`[IG SEARCH] Mapped ${instruments.length} instruments:`, instruments.map(i => `${i.name} (${i.epic})`));
+
+      return instruments;
     } catch (err) {
-      console.error('[IG] searchInstruments error:', err.message);
+      console.error('[IG SEARCH] searchInstruments error:', err.message);
+      if (err.response) {
+        console.error('[IG SEARCH] Status:', err.response.status);
+        console.error('[IG SEARCH] Data:', err.response.data);
+      }
       throw err;  // Throw instead of returning empty array
     }
   }

@@ -40,6 +40,8 @@ try {
   config = {};
 }
 
+let currentEpic = 'CS.D.CFASILVER.CFA.IP';
+
 const app = express();
 const httpServer = createServer(app);
 const io = new SocketIOServer(httpServer, {
@@ -47,6 +49,27 @@ const io = new SocketIOServer(httpServer, {
 });
 
 app.use(express.static(path.join(__dirname, 'public')));
+
+// API endpoints (similar to older project)
+app.get('/api/ticks', (req, res) => {
+  console.log('[TICK MONITOR] 📡 API /api/ticks requested');
+  const ticks = {};
+  for (const [epic, tick] of recentTicks) {
+    ticks[epic] = tick;
+  }
+  const response = {
+    streaming: ig && ig.connected,
+    ticks,
+    count: recentTicks.size,
+    timestamp: Date.now()
+  };
+  console.log('[TICK MONITOR] 📡 API response:', {
+    streaming: response.streaming,
+    count: response.count,
+    tickEpics: Object.keys(ticks)
+  });
+  res.json(response);
+});
 
 let brain = null;
 let ig = null;
@@ -58,6 +81,7 @@ let prevPrices = {};
 let tradeLog = [];  // [{timestamp, epic, direction, entryPrice, exitPrice, motorRate, pnl, efficiency}]
 let efficiencyHistory = [];
 let correlationHistory = [];
+let recentTicks = new Map(); // Store recent ticks like older project
 let observerLog = [];  // [{timestamp, observe_count, motor_rate, all_rates}]
 let tradingGoals = {
   stop_loss_pips: 50,
@@ -86,20 +110,49 @@ async function initializeManagers() {
       password: process.env.IG_PASSWORD,
       apiKey: process.env.IG_API_KEY,
       accountId: process.env.IG_ACCOUNT_ID,
+      epics: config.ig?.epics || ['CS.D.CFASILVER.CFA.IP'],
     });
     
     // Set up IG event handlers
     ig.on('tick', (tick) => {
+      console.log('[TICK MONITOR] 📈 IG TICK RECEIVED:', {
+        epic: tick.epic,
+        bid: tick.bid,
+        ask: tick.ask,
+        price: tick.price,
+        volume: tick.volume,
+        timestamp: tick.timestamp,
+        source: tick.source || 'ig'
+      });
+
+      // Store tick in recent ticks map (like older project)
+      console.log('[TICK MONITOR] 💾 Storing tick in recentTicks map');
+      recentTicks.set(tick.epic, {
+        ...tick,
+        receivedAt: Date.now()
+      });
+
+      // Keep only recent ticks (last 100 per epic)
+      if (recentTicks.size > 1000) {
+        const oldestKey = recentTicks.keys().next().value;
+        recentTicks.delete(oldestKey);
+        console.log('[TICK MONITOR] 🗑️ Cleaned up old ticks, current size:', recentTicks.size);
+      }
+
+      console.log('[TICK MONITOR] 📝 Recording tick to file');
       tickRecorder.recordTick(tick);
-      
+
       // Analyze tick data
+      console.log('[TICK MONITOR] 🔍 Analyzing tick data');
       const analysis = analyzer.analyzeTick(tick);
-      
+      console.log('[TICK MONITOR] 📊 Tick analysis result:', analysis);
+
       // Brain IG wiring Phase 2
       (async () => {
         try {
           const epic = tick.epic || 'CS.D.EURUSD.MINI.IP';
-          
+          console.log('[TICK MONITOR] 🧠 Processing brain stimulation for epic:', epic);
+
           // Price monitor task
           if (assignedTasks.price_monitor && brain && config.neuron_mappings) {
             const region = assignedTasks.price_monitor;
@@ -109,33 +162,37 @@ async function initializeManagers() {
               const delta = (tick.price || 1.1) - prev;
               prevPrices[epic] = tick.price || 1.1;
               const intensity = Math.abs(delta) * 100000; // scale to reasonable Hz
-              console.log(`[IG→Brain] Price Δ${delta.toFixed(6)} → Stim ${region.slice(0,10)}... ${intensity.toFixed(0)}Hz`);
+              console.log(`[TICK MONITOR] 🧠 Price Δ${delta.toFixed(6)} → Stim ${region.slice(0,10)}... ${intensity.toFixed(0)}Hz`);
               await brain.stimulate(neurons.slice(0, 5), intensity); // sample first 5 neurons
             }
           }
-          
+
           // Volume pressure task
           if (assignedTasks.volume_pressure && brain && config.neuron_mappings && tick.volume) {
             const region = assignedTasks.volume_pressure;
             const neurons = config.neuron_mappings[region];
             if (neurons && neurons.length > 0) {
               const intensity = Math.min((tick.volume / 1000) * 50, 200); // cap at 200Hz
-              console.log(`[IG→Brain] Vol ${tick.volume} → Stim ${region.slice(0,10)}... ${intensity.toFixed(0)}Hz`);
+              console.log(`[TICK MONITOR] 🧠 Vol ${tick.volume} → Stim ${region.slice(0,10)}... ${intensity.toFixed(0)}Hz`);
               await brain.stimulate(neurons.slice(0, 5), intensity);
             }
           }
         } catch (brainErr) {
-          console.error('[IG→Brain] Error:', brainErr.message);
+          console.error('[TICK MONITOR] ❌ Brain stimulation error:', brainErr.message);
         }
       })();
-      
+
       // Broadcast both raw tick and analysis
+      console.log('[TICK MONITOR] 📡 Broadcasting tick to frontend clients');
+      const connectedSockets = io.sockets.sockets.size;
+      console.log(`[TICK MONITOR] 📡 Broadcasting to ${connectedSockets} connected clients`);
       io.emit('tick', tick);
       io.emit('tick_analysis', {
         tick,
         analysis,
         summary: analyzer.getSummary(),
       });
+      console.log('[TICK MONITOR] ✅ Tick broadcast complete');
     });
     
     ig.on('account_update', (info) => {
@@ -148,66 +205,286 @@ async function initializeManagers() {
     
     ig.on('connected', () => {
       io.emit('ig_connected');
-      console.log('✓ IG connected');
+      console.log('[IG] ✅ Connected successfully');
     });
-    
+
     ig.on('disconnected', () => {
       io.emit('ig_disconnected');
-      console.log('✗ IG disconnected');
+      console.log('[IG] ❌ Disconnected');
     });
-    
+
     ig.on('error', (err) => {
       io.emit('ig_error', { error: err.message });
-      console.error('IG error:', err.message);
+      console.error('[IG] ❌ Error:', err.message);
     });
   }
 }
 
+
+
 // Socket.io event handlers
 io.on('connection', (socket) => {
-  console.log(`📡 Client connected: ${socket.id}`);
+  console.log(`[TICK MONITOR] 📡 Client connected: ${socket.id}`);
+  console.log(`[TICK MONITOR] 📡 Total connected clients: ${io.sockets.sockets.size}`);
 
   // Initialize on first connection
   socket.on('boot', async (data, callback) => {
     try {
-      if (!brain) {
-        brain = new BrainJar();
-        await brain.boot();
+      // Try to boot brain, but don't fail if it doesn't work
+      let brainBooted = false;
+      try {
+        if (!brain) {
+          brain = new BrainJar();
+          await brain.boot();
+          brainBooted = true;
+        }
+      } catch (brainErr) {
+        console.log('[TICK MONITOR] ⚠️ Brain boot failed, but continuing with IG setup:', brainErr.message);
       }
 
       await initializeManagers();
 
       // Connect IG - no demo mode fallback
       try {
-        console.log('[Boot] Attempting IG connection...');
-        await ig.connect();
-        await ig.startStreaming();
-        console.log('[Boot] ✓ IG connected successfully');
-        io.emit('ig_connected');
-      } catch (igErr) {
-        console.error('[Boot] IG connection failed:', igErr.message);
-        
-        // Emit error event to frontend - will show error message
-        io.emit('ig_error', { 
-          error: `IG connection failed: ${igErr.message}. Check your credentials in .env or use historic data.` 
+        console.log('[TICK MONITOR] 🔌 Attempting IG connection...');
+        console.log('[TICK MONITOR] IG config check:', {
+          username: process.env.IG_USERNAME ? '✓' : '✗',
+          password: process.env.IG_PASSWORD ? '✓' : '✗',
+          apiKey: process.env.IG_API_KEY ? '✓' : '✗',
+          accountId: process.env.IG_ACCOUNT_ID ? '✓' : '✗'
         });
-        
-        // Throw error instead of falling back to demo mode
-        throw new Error(`IG Auth Failed: ${igErr.message}`);
+
+        console.log('[TICK MONITOR] 🔌 Calling ig.connect()...');
+        await ig.connect();
+        console.log('[TICK MONITOR] ✅ IG authentication successful');
+
+        console.log('[TICK MONITOR] 📡 Starting IG streaming...');
+        await ig.startStreaming();
+        console.log('[TICK MONITOR] ✅ IG connected and streaming successfully');
+        io.emit('ig_connected');
+
+        // Set timeout to check if ticks are received within 15 seconds
+        console.log('[TICK MONITOR] ⏰ IG connection initiated, monitoring for tick data...');
+      } catch (igErr) {
+        console.error('[TICK MONITOR] ❌ IG connection failed:', igErr.message);
+
+        // Emit error event to frontend - will show error message
+        io.emit('ig_error', {
+          error: `IG connection failed: ${igErr.message}. No data available.`
+        });
+
+        console.log('[TICK MONITOR] ❌ IG connection failed - no fallback data available');
       }
       
-      const status = await brain.getStatus();
-      
+      let brainStatus = { neurons_count: 0, synapses_count: 0, loaded: false };
+      if (brainBooted && brain) {
+        try {
+          brainStatus = await brain.getStatus();
+        } catch (e) {
+          console.log('[TICK MONITOR] ⚠️ Could not get brain status:', e.message);
+        }
+      }
+
       io.emit('brain_booted', {
-        neurons: status.neurons_count,
-        synapses: status.synapses_count,
-        status: status.loaded,
+        neurons: brainStatus.neurons_count,
+        synapses: brainStatus.synapses_count,
+        status: brainStatus.loaded,
       });
 
-      callback({ success: true, neurons: status.neurons_count });
+      callback({
+        success: true,
+        brainBooted,
+        neurons: brainStatus.neurons_count,
+        synapses: brainStatus.synapses_count
+      });
     } catch (err) {
       console.error('Boot error:', err.message);
       io.emit('boot_error', { error: err.message });
+      callback({ success: false, error: err.message });
+    }
+  });
+
+  socket.on('reconnect_ig', async (data, callback) => {
+    try {
+      console.log('[RECONNECT] Attempting IG reconnection...');
+
+      if (ig) {
+        // Disconnect existing IG connection
+        try {
+          ig.disconnect();
+        } catch (e) {
+          console.log('[RECONNECT] IG disconnect error (ignoring):', e.message);
+        }
+      }
+
+      // Reinitialize IG
+      ig = new IGAdapter({
+        username: process.env.IG_USERNAME,
+        password: process.env.IG_PASSWORD,
+        apiKey: process.env.IG_API_KEY,
+        accountId: process.env.IG_ACCOUNT_ID,
+        epics: config.ig?.epics || ['CS.D.CFASILVER.CFA.IP'],
+      });
+
+      // Set up IG event handlers
+      ig.on('tick', (tick) => {
+        console.log('[TICK MONITOR] 📈 IG TICK RECEIVED:', {
+          epic: tick.epic,
+          bid: tick.bid,
+          ask: tick.ask,
+          price: tick.price,
+          volume: tick.volume,
+          timestamp: tick.timestamp,
+          source: tick.source || 'ig'
+        });
+
+        // Store tick in recent ticks map
+        recentTicks.set(tick.epic, {
+          ...tick,
+          receivedAt: Date.now()
+        });
+
+        // Keep only recent ticks
+        if (recentTicks.size > 1000) {
+          const oldestKey = recentTicks.keys().next().value;
+          recentTicks.delete(oldestKey);
+        }
+
+        tickRecorder.recordTick(tick);
+        const analysis = analyzer.analyzeTick(tick);
+
+        // Brain stimulation logic here (same as before)
+        (async () => {
+          try {
+            const epic = tick.epic || 'CS.D.CFASILVER.CFA.IP';
+            console.log('[TICK MONITOR] 🧠 Processing brain stimulation for epic:', epic);
+
+            if (assignedTasks.price_monitor && brain && config.neuron_mappings) {
+              const region = assignedTasks.price_monitor;
+              const neurons = config.neuron_mappings[region];
+              if (neurons && neurons.length > 0) {
+                const prev = prevPrices[epic] || (tick.price || 1.1);
+                const delta = (tick.price || 1.1) - prev;
+                prevPrices[epic] = tick.price || 1.1;
+                const intensity = Math.abs(delta) * 100000;
+                console.log(`[TICK MONITOR] 🧠 Price Δ${delta.toFixed(6)} → Stim ${region.slice(0,10)}... ${intensity.toFixed(0)}Hz`);
+                await brain.stimulate(neurons.slice(0, 5), intensity);
+              }
+            }
+
+            if (assignedTasks.volume_pressure && brain && config.neuron_mappings && tick.volume) {
+              const region = assignedTasks.volume_pressure;
+              const neurons = config.neuron_mappings[region];
+              if (neurons && neurons.length > 0) {
+                const intensity = Math.min((tick.volume / 1000) * 50, 200);
+                console.log(`[TICK MONITOR] 🧠 Vol ${tick.volume} → Stim ${region.slice(0,10)}... ${intensity.toFixed(0)}Hz`);
+                await brain.stimulate(neurons.slice(0, 5), intensity);
+              }
+            }
+          } catch (brainErr) {
+            console.error('[TICK MONITOR] ❌ Brain stimulation error:', brainErr.message);
+          }
+        })();
+
+        io.emit('tick', tick);
+        io.emit('tick_analysis', {
+          tick,
+          analysis,
+          summary: analyzer.getSummary(),
+        });
+      });
+
+      ig.on('account_update', (info) => {
+        io.emit('account_update', info);
+      });
+
+      ig.on('trade', (trade) => {
+        io.emit('trade', trade);
+      });
+
+      ig.on('connected', () => {
+        io.emit('ig_connected');
+        console.log('[IG] ✅ Reconnected successfully');
+      });
+
+      ig.on('disconnected', () => {
+        io.emit('ig_disconnected');
+        console.log('[IG] ❌ Re-disconnected');
+      });
+
+      ig.on('error', (err) => {
+        io.emit('ig_error', { error: err.message });
+        console.error('[IG] ❌ Reconnect error:', err.message);
+      });
+
+      // Connect IG
+      console.log('[RECONNECT] 🔌 Calling ig.connect()...');
+      await ig.connect();
+      console.log('[RECONNECT] ✅ IG re-authentication successful');
+
+      console.log('[RECONNECT] 📡 Starting IG streaming...');
+      await ig.startStreaming();
+      console.log('[RECONNECT] ✅ IG reconnected and streaming successfully');
+      io.emit('ig_connected');
+
+      callback({ success: true });
+    } catch (err) {
+      console.error('[RECONNECT] IG reconnect failed:', err.message);
+      io.emit('ig_error', { error: `Reconnect failed: ${err.message}` });
+      callback({ success: false, error: err.message });
+    }
+  });
+
+  socket.on('reconnect_brain', async (data, callback) => {
+    try {
+      console.log('[RECONNECT] Attempting brain reconnection...');
+
+      if (brain) {
+        // Try to disconnect or reset brain
+        try {
+          // No explicit disconnect method, just set to null
+          brain = null;
+        } catch (e) {
+          console.log('[RECONNECT] Brain reset error (ignoring):', e.message);
+        }
+      }
+
+      // Reinitialize brain
+      brain = new BrainJar();
+      await brain.boot();
+
+      const brainStatus = await brain.getStatus();
+
+      io.emit('brain_booted', {
+        neurons: brainStatus.neurons_count,
+        synapses: brainStatus.synapses_count,
+        status: brainStatus.loaded,
+      });
+
+      console.log('[RECONNECT] ✅ Brain reconnected successfully');
+      callback({ success: true, neurons: brainStatus.neurons_count });
+    } catch (err) {
+      console.error('[RECONNECT] Brain reconnect failed:', err.message);
+      callback({ success: false, error: err.message });
+    }
+  });
+
+  socket.on('set_poll_interval', (data, callback) => {
+    try {
+      const interval = parseInt(data.interval);
+      if (interval < 500 || interval > 300000) {
+        callback({ success: false, error: 'Interval must be between 500ms and 300000ms (5min)' });
+        return;
+      }
+      if (ig) {
+        ig.setPollingInterval(interval);
+        console.log(`[POLL] Set polling interval to ${interval}ms`);
+        callback({ success: true });
+      } else {
+        callback({ success: false, error: 'IG not initialized' });
+      }
+    } catch (err) {
+      console.error('[POLL] Error setting interval:', err.message);
       callback({ success: false, error: err.message });
     }
   });
@@ -239,8 +516,9 @@ io.on('connection', (socket) => {
 
   socket.on('observe', async (data, callback) => {
     try {
-      if (!brain) {
-        throw new Error('Brain not initialized. Call boot first.');
+      if (!brain || !brain.isBooted) {
+        callback({ success: false, error: 'Brain not booted. Please wait for boot to complete.' });
+        return;
       }
       const res = await brain.observe();
       
@@ -294,44 +572,28 @@ io.on('connection', (socket) => {
   socket.on('place_order', async (data, callback) => {
     try {
       if (!ig || !ig.connected) {
-        callback({ success: false, error: 'IG not connected' });
+        callback({ success: false, error: 'IG not connected - please wait for IG connection' });
         return;
       }
 
-      const dealRefId = await ig.placeOrder(data.epic, data.direction, data.size);
-      callback({ success: true, dealRefId });
+      console.log(`[Force Trade] Placing ${data.direction} market order for ${data.epic} size ${data.size}`);
+
+      // Use placeOrder for real market orders
+      const result = await ig.placeOrder(data.epic, data.direction, data.size);
+      console.log(`[Force Trade] Order result:`, result);
+
+      callback({
+        success: true,
+        dealRefId: result.dealRefId,
+        dealId: result.dealId,
+        message: `${data.direction} market order placed successfully`
+      });
     } catch (err) {
-      console.error('Order error:', err.message);
+      console.error('[Force Trade] Order error:', err.message);
       callback({ success: false, error: err.message });
     }
   });
 
-  
-  socket.on('get_tick_analysis', (data, callback) => {
-    try {
-      if (!analyzer) {
-        throw new Error('Analyzer not initialized');
-      }
-      
-      const summary = analyzer.getSummary();
-      const history = analyzer.getTickHistory();
-      const candles = analyzer.getAllCandles();
-      
-      if (typeof callback === 'function') {
-        callback({
-          success: true,
-          summary,
-          history,
-          candles,
-        });
-      }
-    } catch (err) {
-      console.error('Analysis error:', err.message);
-      if (typeof callback === 'function') {
-        callback({ success: false, error: err.message });
-      }
-    }
-  });
   socket.on('get_memory', (data, callback) => {
     try {
       if (!memory) {
@@ -380,6 +642,42 @@ io.on('connection', (socket) => {
       }
     } catch (err) {
       console.error('Feedback error:', err.message);
+    }
+  });
+
+  // Position management settings
+  socket.on('update_position_settings', (data) => {
+    config.maxPositions = data.maxPositions || 3;
+    config.minPositionSize = data.minPositionSize || 0.5;
+    console.log(`[Position Settings] Updated: max=${config.maxPositions}, min_size=${config.minPositionSize}`);
+    socket.emit('position_settings_updated', data);
+  });
+
+  socket.on('close_all_positions', async (data, callback) => {
+    try {
+      if (!ig || !ig.connected) {
+        callback({ success: false, error: 'IG not connected' });
+        return;
+      }
+
+      // Get current positions
+      const positions = await ig.getPositions();
+      let closedCount = 0;
+
+      for (const position of positions) {
+        try {
+          await ig.closePosition(position.dealId);
+          closedCount++;
+          console.log(`[Close All] Closed position: ${position.dealId}`);
+        } catch (err) {
+          console.error(`[Close All] Failed to close ${position.dealId}:`, err.message);
+        }
+      }
+
+      callback({ success: true, closed: closedCount, message: `Closed ${closedCount} positions` });
+    } catch (err) {
+      console.error('[Close All] Error:', err.message);
+      callback({ success: false, error: err.message });
     }
   });
 
@@ -489,10 +787,19 @@ io.on('connection', (socket) => {
   // ============ PHASE 7: Instrument Selector, Backtesting, Neural Trading ============
 
   socket.on('search_instruments', async (data, callback) => {
+    console.log('[DEBUG] Received search_instruments event:', data);
     try {
+      if (!ig || !ig.connected) {
+        console.log('[DEBUG] IG not connected');
+        callback({ success: false, error: 'IG not connected - cannot search instruments' });
+        return;
+      }
+
+      console.log('[DEBUG] Calling ig.searchInstruments with term:', data.term);
       // Search IG markets via adapter - real data only
       const instruments = await ig.searchInstruments(data.term);
-      
+      console.log('[DEBUG] searchInstruments returned:', instruments);
+
       if (instruments.length > 0) {
         console.log(`[Search] Found ${instruments.length} instruments matching "${data.term}"`);
         callback({ success: true, instruments });
@@ -516,15 +823,17 @@ io.on('connection', (socket) => {
           const accountInfo = await ig.getAccountInfo();
           io.emit('account_update', {
             balance: accountInfo.balance,
-            pnl: accountInfo.profitLoss || 0,
+            pnl: accountInfo.totalProfitLoss || accountInfo.profitLoss || 0,
             available: accountInfo.availableFunds || accountInfo.balance,
-            margin_pct: (accountInfo.availableFunds / accountInfo.balance * 100) || 100
+            margin_pct: '0%', // IG /accounts doesn't provide margin %
+            equity: accountInfo.balance, // IG doesn't separate equity from balance
+            marginUsed: accountInfo.marginUsed || 0
           });
         } catch (err) {
           console.error('[Account Poll] Error:', err.message);
         }
       }
-    }, 10000); // 10s poll interval
+    }, 3000); // 3s poll interval (same as market data when no Lightstreamer)
   };
 
   socket.on('instrument_selected', (data, callback) => {
@@ -534,13 +843,22 @@ io.on('connection', (socket) => {
       epic: data.epic,
       selected_at: new Date().toISOString()
     };
-    
+
+    // Update current epic for trading
+    currentEpic = data.epic;
+
+    // Update IG adapter epics and restart streaming
+    if (ig) {
+      ig.epics = [data.epic];
+      ig.startStreaming();
+    }
+
     // Auto-enable backtest
     socket.emit('start_backtest', {});
-    
+
     // Start account polling if not already running
     startAccountPolling();
-    
+
     if (callback) callback({ success: true });
   });
 
@@ -622,12 +940,69 @@ io.on('connection', (socket) => {
     const maxTrades = 20;
     const maxDuration = 30 * 60 * 1000; // 30 min
     const tradingStart = Date.now();
-    
+
     console.log('[Calibration Phase 2] Starting trading phase - max 20 trades');
 
-    // Hook into tick events to trigger trades based on threshold
-    // This will be implemented in the main tick handler below
+    // Set up trading logic
     calibrationState.trading_phase_start = tradingStart;
+    calibrationState.last_trade_time = 0;
+    calibrationState.trade_interval = setInterval(async () => {
+      try {
+        // Check if we should stop
+        const elapsed = Date.now() - tradingStart;
+        if (elapsed >= maxDuration || calibrationState.trades_executed >= maxTrades) {
+          console.log('[Calibration] Trading phase complete');
+          clearInterval(calibrationState.trade_interval);
+          calibrationState.running = false;
+          io.emit('calibration_update', {
+            status: '✅ Calibration complete!',
+            trades: calibrationState.trades_executed,
+            winRate: calibrationState.win_count / Math.max(calibrationState.trades_executed, 1)
+          });
+          return;
+        }
+
+        // Get current neural observation
+        socket.emit('observe', async (rates) => {
+          if (!rates || rates.motor_rates === undefined) return;
+
+          // Check if neural signal exceeds threshold
+          const motorRate = Array.isArray(rates.motor_rates) ?
+            rates.motor_rates.reduce((a, b) => a + b, 0) / rates.motor_rates.length :
+            rates.motor_rates;
+
+          if (motorRate > calibrationState.threshold) {
+            // Neural signal strong enough - place trade
+            const direction = Math.random() > 0.5 ? 'BUY' : 'SELL';
+            const epic = config.current_instrument?.epic || 'CS.D.CFASILVER.CFA.IP';
+            const size = 0.5; // Small test size
+
+            console.log(`[Calibration Trade] Neural signal ${motorRate.toFixed(2)} > threshold ${calibrationState.threshold.toFixed(2)}, placing ${direction} trade`);
+
+            try {
+              if (ig && ig.connected) {
+                const result = await ig.placeOrder(epic, direction, size);
+                calibrationState.trades_executed++;
+
+                io.emit('calibration_update', {
+                  status: `🔄 Trade ${calibrationState.trades_executed}/${maxTrades}: ${direction} ${size} ${epic}`,
+                  trades: calibrationState.trades_executed
+                });
+
+                console.log(`[Calibration] Trade ${calibrationState.trades_executed} executed: ${result.dealRefId}`);
+              } else {
+                console.log('[Calibration] IG not connected, skipping trade');
+              }
+            } catch (tradeErr) {
+              console.error('[Calibration] Trade failed:', tradeErr.message);
+            }
+          }
+        });
+
+      } catch (err) {
+        console.error('[Calibration] Trading phase error:', err.message);
+      }
+    }, 5000); // Check every 5 seconds
   }
 
   socket.on('calibration_stop', (data, callback) => {
@@ -640,40 +1015,42 @@ io.on('connection', (socket) => {
     if (callback) callback({ success: true });
   });
 
-  // Test trade (manual BUY/SELL for dev testing)
+  // Test trade (SIMULATED BUY/SELL for dev testing - NOT REAL ORDERS)
   socket.on('test_trade', async (data, callback) => {
-    if (!ig || !ig.connected) {
-      if (callback) callback({ success: false, error: 'IG not connected' });
-      return;
-    }
-
     try {
-      const epic = config.current_instrument?.epic || 'CS.D.XAGUSD.SPOT.IP';
+      const epic = config.current_instrument?.epic || 'CS.D.XAGUSD.CFD.IP';
       const size = 0.5; // Test size
-      
-      console.log(`[Test Trade] ${data.direction} ${size} contracts of ${epic}`);
 
-      // Place real order via IG API
-      const trade = await ig.placeOrder(epic, data.direction, size);
+      console.log(`[Test Trade] SIMULATED ${data.direction} ${size} contracts of ${epic}`);
+
+      // Simulate trade instead of placing real order
+      const simulatedTrade = {
+        dealId: `SIM_${Date.now()}`,
+        epic: epic,
+        direction: data.direction,
+        size: size,
+        level: Math.random() * 100 + 20, // Random price
+        timestamp: new Date().toISOString()
+      };
 
       tradeLog.push({
         timestamp: new Date().toISOString(),
         epic: epic,
         direction: data.direction,
-        entryPrice: trade.level || 0,
+        entryPrice: simulatedTrade.level || 0,
         exitPrice: 0,
         motorRate: calibrationState.baseline_motor || 0,
         pnl: 0,
         efficiency: 0,
-        dealId: trade.dealId,
-        dealRef: trade.dealRefId,
-        type: 'real'
+        dealId: simulatedTrade.dealId,
+        dealRef: simulatedTrade.dealId, // Use dealId as dealRef for simulated trades
+        type: 'simulated'
       });
 
-      if (callback) callback({ 
-        success: true, 
-        message: `${data.direction} order placed: ${trade.dealRefId}`,
-        dealId: trade.dealId
+      if (callback) callback({
+        success: true,
+        message: `${data.direction} order simulated: ${simulatedTrade.dealId}`,
+        dealId: simulatedTrade.dealId
       });
     } catch (err) {
       console.error('[Test Trade] Error:', err.message);
@@ -777,9 +1154,57 @@ process.on('SIGINT', async () => {
   }
 })();
 
+// Auto-boot function for testing
+async function autoBoot() {
+  console.log('[TICK MONITOR] 🔄 Auto-booting system for tick testing...');
+  try {
+    // Initialize managers
+    await initializeManagers();
+
+    // Try IG connection
+    try {
+      console.log('[TICK MONITOR] 🔌 Auto-attempting IG connection...');
+      console.log('[TICK MONITOR] IG config check:', {
+        username: process.env.IG_USERNAME ? '✓' : '✗',
+        password: process.env.IG_PASSWORD ? '✓' : '✗',
+        apiKey: process.env.IG_API_KEY ? '✓' : '✗',
+        accountId: process.env.IG_ACCOUNT_ID ? '✓' : '✗'
+      });
+
+      await ig.connect();
+      console.log('[TICK MONITOR] ✅ IG authentication successful');
+
+      await ig.startStreaming();
+      console.log('[TICK MONITOR] ✅ IG connected and streaming successfully');
+      io.emit('ig_connected');
+
+      // Set timeout to check for ticks
+      setTimeout(() => {
+        console.log(`[TICK MONITOR] ⏰ Auto-boot timeout check: ${recentTicks.size} ticks received`);
+        if (recentTicks.size === 0) {
+          console.log('[TICK MONITOR] ❌ No ticks from IG - dashboard will show no data');
+        } else {
+          console.log(`[TICK MONITOR] ✅ IG streaming working with ${recentTicks.size} ticks`);
+        }
+      }, 10000);
+
+    } catch (igErr) {
+      console.error('[TICK MONITOR] ❌ IG auto-connection failed:', igErr.message);
+      console.log('[TICK MONITOR] ❌ No IG connection - dashboard will show no data');
+    }
+  } catch (err) {
+    console.error('[TICK MONITOR] ❌ Auto-boot failed:', err.message);
+  }
+}
+
 // Start server
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3003;
+console.log(`[TICK MONITOR] 🚀 Starting BrainJar Dashboard server on port ${PORT}...`);
 httpServer.listen(PORT, () => {
-  console.log(`🎨 Dashboard running on http://localhost:${PORT}`);
-  console.log(`📊 IG Integration ready (demo mode if credentials not set)`);
+  console.log(`[TICK MONITOR] 🎨 Dashboard running on http://localhost:${PORT}`);
+  console.log(`[TICK MONITOR] 📊 IG Integration ready (will attempt live connection)`);
+  console.log(`[TICK MONITOR] 📈 Tick monitoring enabled - watching for IG data flow`);
+
+  // Auto-boot after server starts
+  setTimeout(autoBoot, 2000);
 });

@@ -48,6 +48,12 @@
     "min_profit_pct": 5,
     "risk_reward_ratio": 1.5
   },
+  "ig": {
+    "epics": [
+      "CS.D.CFASILVER.CFA.IP"
+    ],
+    "default_epic": "CS.D.CFASILVER.CFA.IP"
+  },
   "instrument_configs": {
     "_defaults": {
       "r_poi": 250,
